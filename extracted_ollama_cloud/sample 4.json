@@ -1,0 +1,202 @@
+{
+  "party_name": "MAHARAJA RM",
+  "order_no": "",
+  "order_date": "01/04/2026",
+  "items": [
+    {
+      "item": "B.3825 SHORT SET",
+      "type": "RNBS",
+      "quantities": {
+        "45": 1,
+        "50": 1,
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1,
+        "85": 1,
+        "90": 1
+      }
+    },
+    {
+      "item": "B.3824 SHORT SET",
+      "type": "RNBS",
+      "quantities": {
+        "45": 1,
+        "50": 1,
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1
+      }
+    },
+    {
+      "item": "TAB CASUAL 3/4th SET",
+      "type": "RNBS",
+      "quantities": {
+        "45": 1,
+        "50": 1,
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1,
+        "85": 1,
+        "90": 1
+      }
+    },
+    {
+      "item": "D&M B4696 F/PANT SET",
+      "type": "RNES",
+      "quantities": {
+        "65": 1,
+        "70": 1,
+        "75": 1
+      }
+    },
+    {
+      "item": "B.4749 F/PANT SET",
+      "type": "RNS",
+      "quantities": {
+        "45": 1,
+        "50": 1,
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1,
+        "85": 1,
+        "90": 1
+      }
+    },
+    {
+      "item": "SPRIT F/PANT SET",
+      "type": "RNS",
+      "quantities": {
+        "45": 1,
+        "50": 1,
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1,
+        "85": 1,
+        "90": 1
+      }
+    },
+    {
+      "item": "GENTLE F/PANT SET",
+      "type": "RNS",
+      "quantities": {
+        "45": 1,
+        "50": 1,
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1,
+        "85": 1,
+        "90": 1
+      }
+    },
+    {
+      "item": "TAB CASUAL F/P SET",
+      "type": "RNS",
+      "quantities": {
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1,
+        "85": 1,
+        "90": 1
+      }
+    },
+    {
+      "item": "LOOPER ZB 3964 SHORTS",
+      "type": "HALF",
+      "quantities": {
+        "45": 1,
+        "50": 1,
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1,
+        "85": 1,
+        "90": 1
+      }
+    },
+    {
+      "item": "CREED B4356",
+      "type": "PANT",
+      "quantities": {
+        "45": 1,
+        "50": 1,
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1,
+        "85": 1,
+        "90": 1
+      }
+    },
+    {
+      "item": "LOOPER ZB 3965",
+      "type": "PANT",
+      "quantities": {
+        "45": 1,
+        "50": 1,
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1,
+        "85": 1,
+        "90": 1
+      }
+    },
+    {
+      "item": "MYD D.7 3/4th PANT",
+      "type": "",
+      "quantities": {
+        "45": 1,
+        "50": 1,
+        "55": 1,
+        "60": 1,
+        "65": 1,
+        "70": 1,
+        "75": 1,
+        "80": 1,
+        "85": 1,
+        "90": 1
+      }
+    }
+  ],
+  "notes": [
+    "Row-crop recount found no quantities for 'B.3825 SHORT SET' -- kept the original full-page reading.",
+    "Row-crop recount for 'TAB CASUAL 3/4th SET' saw 'SHORT SET RNBS' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "Row-crop recount for 'D&M B4696 F/PANT SET' saw '3. TAQ CASUAL' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "Row-crop recount for 'LOOPER ZB 3964 SHORTS' saw 'S. TAQ. CASUAL' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "Row-crop recount for 'CREED B4356' saw '9. Looper ZB 3964' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "Row-crop recount for 'LOOPER ZB 3965' saw 'CREED B4356 / PANT' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "NEEDS REVIEW (resolved) -- 'B.3824 SHORT SET': main reading and row-crop recount disagree (85: main=1 vs recount=-; 90: main=1 vs recount=-). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'B.4749 F/PANT SET': main reading and row-crop recount disagree (45: main=1 vs recount=-; 50: main=1 vs recount=-; 55: main=1 vs recount=-; 60: main=1 vs recount=-; 65: main=1 vs recount=-; 70: main=1 vs recount=-; 75: main=1 vs recount=-; 80: main=1 vs recount=-; 85: main=1 vs recount=-; 90: main=1 vs recount=-; : main=- vs recount=0). Kept the main (default, unresolved) reading; verify this row against the photo.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'SPRIT F/PANT SET': main reading and row-crop recount disagree (45: main=1 vs recount=-; 50: main=1 vs recount=-; 55: main=1 vs recount=-; 60: main=1 vs recount=-; 65: main=1 vs recount=-; 70: main=1 vs recount=-; 75: main=1 vs recount=-; 80: main=1 vs recount=-; 85: main=1 vs recount=-; 90: main=1 vs recount=-; : main=- vs recount=0). Kept the main (default, unresolved) reading; verify this row against the photo.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'GENTLE F/PANT SET': main reading and row-crop recount disagree (45: main=1 vs recount=-; 50: main=1 vs recount=-; 90: main=1 vs recount=-). Kept the main (default, unresolved) reading; verify this row against the photo.",
+    "NEEDS REVIEW (resolved) -- 'TAB CASUAL F/P SET': main reading and row-crop recount disagree (45: main=1 vs recount=-; 50: main=1 vs recount=-). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'MYD D.7 3/4th PANT': main reading and row-crop recount disagree (45: main=1 vs recount=-; 50: main=1 vs recount=-; 85: main=1 vs recount=-; 90: main=1 vs recount=-). Kept the main (default, unresolved) reading; verify this row against the photo."
+  ]
+}

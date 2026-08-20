@@ -1,0 +1,8 @@
+ollama>=0.4.0        # python client for your local Ollama server
+pydantic>=2.0
+Pillow>=10.0.0        # cropping each row out of the source image before Stage B
+opencv-python>=4.8.0  # detecting the ruled table's row lines (grid.py)
+numpy>=1.24.0         # array ops for grid.py's line-density peak detection
+paddleocr>=3.0.0      # v6: reads each row's cells directly (ocr_cell_read.py), replacing the VLM there
+paddlepaddle>=3.0.0   # paddleocr's inference backend -- needs Python <=3.12 (no 3.13+ wheels yet);
+                      # use the project's .venv (3.11), not a newer system Python

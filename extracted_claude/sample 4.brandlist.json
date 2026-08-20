@@ -1,0 +1,298 @@
+[
+  {
+    "item": "B.3825 SHORT SET",
+    "type": "RNBS",
+    "match": {
+      "bname": "B 3825 S 8696 SHORTS SET",
+      "styles": [
+        "RNBS"
+      ],
+      "sizes": [
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80
+      ],
+      "score": 85.5,
+      "code_narrowed": true
+    }
+  },
+  {
+    "item": "B.3824 SHORT SET",
+    "type": "RNBS",
+    "match": {
+      "bname": "B 3824 S 8695 SHORTS SET",
+      "styles": [
+        "RNBS"
+      ],
+      "sizes": [
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80
+      ],
+      "score": 85.5,
+      "code_narrowed": true
+    }
+  },
+  {
+    "item": "TAG CASUAL 3/4TH SET",
+    "type": "RNBS",
+    "match": {
+      "bname": "CASUAL 3/4th SET",
+      "styles": [
+        "RNBS",
+        "RNS"
+      ],
+      "sizes": [
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90
+      ],
+      "score": 95.0,
+      "code_narrowed": false
+    }
+  },
+  {
+    "item": "DHM B4696 F/PANT SET",
+    "type": "RNFS",
+    "match": {
+      "bname": "D & M LOOPER - Z B 4696 FULL PANT SET",
+      "styles": [
+        "RNFS"
+      ],
+      "sizes": [
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85
+      ],
+      "score": 85.5,
+      "code_narrowed": true
+    }
+  },
+  {
+    "item": "B.4749 F/PANT SET",
+    "type": "RNS",
+    "match": {
+      "bname": "B 4749 FULL PANT SET",
+      "styles": [
+        "RNS"
+      ],
+      "sizes": [
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90
+      ],
+      "score": 91.9,
+      "code_narrowed": true
+    },
+    "sizes_outside_catalog_range": [
+      50
+    ],
+    "likely_column_shift": {
+      "offset": 1,
+      "suggested_correction": {
+        "50": 55,
+        "55": 60,
+        "60": 65,
+        "65": 70,
+        "70": 75,
+        "75": 80,
+        "80": 85,
+        "85": 90
+      }
+    }
+  },
+  {
+    "item": "SPRIT F/PANT SET",
+    "type": "RNS",
+    "match": {
+      "bname": "SPRIT FULL PANT SET",
+      "styles": [
+        "RNS"
+      ],
+      "sizes": [
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90
+      ],
+      "score": 91.4,
+      "code_narrowed": false
+    }
+  },
+  {
+    "item": "GENTLE F/PANT SET",
+    "type": "RNS",
+    "match": {
+      "bname": "JENT PANT",
+      "styles": [
+        "3/4TH",
+        "PANT"
+      ],
+      "sizes": [
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90,
+        95,
+        100
+      ],
+      "score": 85.5,
+      "code_narrowed": false
+    },
+    "style_mismatch": [
+      "3/4TH",
+      "PANT"
+    ]
+  },
+  {
+    "item": "TAG CASUAL F/P SET",
+    "type": "RNS",
+    "match": {
+      "bname": "SALMA LEGGINS PANT SET 2060",
+      "styles": [
+        "RNS"
+      ],
+      "sizes": [
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75
+      ],
+      "score": 85.5,
+      "code_narrowed": false
+    }
+  },
+  {
+    "item": "LOOPER ZB 3964 SHORTS",
+    "type": "",
+    "match": {
+      "bname": "LOOPER - Z B 3964 SHORTS",
+      "styles": [
+        "HALF"
+      ],
+      "sizes": [
+        45,
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85
+      ],
+      "score": 93.3,
+      "code_narrowed": true
+    },
+    "type_filled_from_catalog": "HALF"
+  },
+  {
+    "item": "CREBO B4756 F/PANT",
+    "type": "",
+    "match": {
+      "bname": "B 4756 SHORTS",
+      "styles": [
+        "HALF"
+      ],
+      "sizes": [
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85,
+        90
+      ],
+      "score": 51.6,
+      "code_narrowed": true
+    }
+  },
+  {
+    "item": "LOOPER ZB3965 H/PANT",
+    "type": "",
+    "match": {
+      "bname": "LOOPER - Z B 3965 SHORTS (AOP)",
+      "styles": [
+        "HALF"
+      ],
+      "sizes": [
+        50,
+        55,
+        60,
+        65,
+        70,
+        75,
+        80,
+        85
+      ],
+      "score": 69.4,
+      "code_narrowed": true
+    }
+  },
+  {
+    "item": "MYD D.7 PANT",
+    "type": "3/4TH",
+    "match": {
+      "bname": "HOORULEEN BASIC D.PLAIN",
+      "styles": [
+        "OE"
+      ],
+      "sizes": [
+        75,
+        80,
+        85,
+        90,
+        95,
+        100,
+        105,
+        110
+      ],
+      "score": 85.5,
+      "code_narrowed": false
+    },
+    "style_mismatch": [
+      "OE"
+    ]
+  }
+]

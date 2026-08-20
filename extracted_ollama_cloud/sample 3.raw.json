@@ -1,0 +1,386 @@
+{
+  "seller_name": "ESSA GARMENTS PRIVATE LIMITED",
+  "party_name": "A.T Distributors HYDERABAD",
+  "order_no": "",
+  "order_date": "31/03/2016",
+  "size_headers": [
+    "45",
+    "50",
+    "55",
+    "60",
+    "65",
+    "70",
+    "75",
+    "80",
+    "85",
+    "90",
+    "95",
+    "100",
+    "105"
+  ],
+  "items": [
+    {
+      "item": "Looper x 2 4232",
+      "type": "full Pant",
+      "quantities": [],
+      "row_total": "23",
+      "row_top_frac": 0.31,
+      "row_bottom_frac": 0.34
+    },
+    {
+      "item": "B-4749",
+      "type": "Full Pant",
+      "quantities": [],
+      "row_total": "58",
+      "row_top_frac": 0.34,
+      "row_bottom_frac": 0.37
+    },
+    {
+      "item": "B-4248",
+      "type": "Full Pant",
+      "quantities": [],
+      "row_total": "36",
+      "row_top_frac": 0.37,
+      "row_bottom_frac": 0.4
+    },
+    {
+      "item": "B Gentle",
+      "type": "full Pant",
+      "quantities": [],
+      "row_total": "21",
+      "row_top_frac": 0.4,
+      "row_bottom_frac": 0.43
+    },
+    {
+      "item": "B-509",
+      "type": "3/4 set",
+      "quantities": [
+        {
+          "size": "45",
+          "quantity": 2
+        },
+        {
+          "size": "50",
+          "quantity": 3
+        },
+        {
+          "size": "55",
+          "quantity": 5
+        },
+        {
+          "size": "60",
+          "quantity": 5
+        },
+        {
+          "size": "65",
+          "quantity": 5
+        },
+        {
+          "size": "70",
+          "quantity": 5
+        },
+        {
+          "size": "75",
+          "quantity": 5
+        },
+        {
+          "size": "80",
+          "quantity": 3
+        }
+      ],
+      "row_total": "35",
+      "row_top_frac": 0.43,
+      "row_bottom_frac": 0.46
+    },
+    {
+      "item": "B-511",
+      "type": "3/4 set",
+      "quantities": [],
+      "row_total": "33",
+      "row_top_frac": 0.46,
+      "row_bottom_frac": 0.49
+    },
+    {
+      "item": "Super Boxer",
+      "type": "Pant",
+      "quantities": [
+        {
+          "size": "45",
+          "quantity": 3
+        },
+        {
+          "size": "50",
+          "quantity": 5
+        },
+        {
+          "size": "55",
+          "quantity": 5
+        },
+        {
+          "size": "60",
+          "quantity": 5
+        },
+        {
+          "size": "65",
+          "quantity": 5
+        },
+        {
+          "size": "70",
+          "quantity": 5
+        },
+        {
+          "size": "75",
+          "quantity": 5
+        },
+        {
+          "size": "80",
+          "quantity": 3
+        }
+      ],
+      "row_total": "",
+      "row_top_frac": 0.49,
+      "row_bottom_frac": 0.52
+    },
+    {
+      "item": "C41131",
+      "type": "Full Pant",
+      "quantities": [],
+      "row_total": "37",
+      "row_top_frac": 0.52,
+      "row_bottom_frac": 0.55
+    },
+    {
+      "item": "Looper",
+      "type": "Full Pant",
+      "quantities": [],
+      "row_total": "26",
+      "row_top_frac": 0.55,
+      "row_bottom_frac": 0.58
+    },
+    {
+      "item": "B5102",
+      "type": "3/4 set",
+      "quantities": [],
+      "row_total": "35",
+      "row_top_frac": 0.58,
+      "row_bottom_frac": 0.61
+    },
+    {
+      "item": "Salma Perry",
+      "type": "full Pant",
+      "quantities": [],
+      "row_total": "48",
+      "row_top_frac": 0.61,
+      "row_bottom_frac": 0.64
+    },
+    {
+      "item": "Loop Square",
+      "type": "full Pant",
+      "quantities": [],
+      "row_total": "32",
+      "row_top_frac": 0.64,
+      "row_bottom_frac": 0.67
+    },
+    {
+      "item": "Elf force",
+      "type": "full Pant",
+      "quantities": [
+        {
+          "size": "60",
+          "quantity": 3
+        },
+        {
+          "size": "65",
+          "quantity": 3
+        },
+        {
+          "size": "70",
+          "quantity": 3
+        },
+        {
+          "size": "75",
+          "quantity": 3
+        },
+        {
+          "size": "80",
+          "quantity": 3
+        },
+        {
+          "size": "85",
+          "quantity": 3
+        },
+        {
+          "size": "90",
+          "quantity": 2
+        }
+      ],
+      "row_total": "30",
+      "row_top_frac": 0.67,
+      "row_bottom_frac": 0.7
+    },
+    {
+      "item": "Tech Tron",
+      "type": "full Pant",
+      "quantities": [],
+      "row_total": "20",
+      "row_top_frac": 0.7,
+      "row_bottom_frac": 0.73
+    },
+    {
+      "item": "Feather Box",
+      "type": "RNBS",
+      "quantities": [],
+      "row_total": "37",
+      "row_top_frac": 0.73,
+      "row_bottom_frac": 0.76
+    },
+    {
+      "item": "XUV Half Short",
+      "type": "RNBS",
+      "quantities": [],
+      "row_total": "37",
+      "row_top_frac": 0.76,
+      "row_bottom_frac": 0.79
+    },
+    {
+      "item": "MM K4532",
+      "type": "RNBS",
+      "quantities": [
+        {
+          "size": "50",
+          "quantity": 6
+        },
+        {
+          "size": "55",
+          "quantity": 6
+        },
+        {
+          "size": "60",
+          "quantity": 6
+        },
+        {
+          "size": "65",
+          "quantity": 6
+        },
+        {
+          "size": "70",
+          "quantity": 6
+        }
+      ],
+      "row_total": "30",
+      "row_top_frac": 0.79,
+      "row_bottom_frac": 0.82
+    },
+    {
+      "item": "MM k 3674",
+      "type": "RNBS",
+      "quantities": [
+        {
+          "size": "45",
+          "quantity": 6
+        },
+        {
+          "size": "50",
+          "quantity": 6
+        },
+        {
+          "size": "55",
+          "quantity": 6
+        },
+        {
+          "size": "60",
+          "quantity": 6
+        },
+        {
+          "size": "65",
+          "quantity": 6
+        }
+      ],
+      "row_total": "30",
+      "row_top_frac": 0.82,
+      "row_bottom_frac": 0.85
+    },
+    {
+      "item": "MM Looper 4289",
+      "type": "RNBS",
+      "quantities": [
+        {
+          "size": "45",
+          "quantity": 5
+        },
+        {
+          "size": "50",
+          "quantity": 5
+        },
+        {
+          "size": "55",
+          "quantity": 5
+        },
+        {
+          "size": "60",
+          "quantity": 5
+        },
+        {
+          "size": "65",
+          "quantity": 5
+        }
+      ],
+      "row_total": "25",
+      "row_top_frac": 0.85,
+      "row_bottom_frac": 0.88
+    },
+    {
+      "item": "Nivi Brick",
+      "type": "RNBS",
+      "quantities": [
+        {
+          "size": "50",
+          "quantity": 5
+        },
+        {
+          "size": "55",
+          "quantity": 5
+        },
+        {
+          "size": "60",
+          "quantity": 5
+        },
+        {
+          "size": "65",
+          "quantity": 5
+        },
+        {
+          "size": "70",
+          "quantity": 5
+        }
+      ],
+      "row_total": "25",
+      "row_top_frac": 0.88,
+      "row_bottom_frac": 0.91
+    }
+  ],
+  "notes": [
+    "Row-crop recount for 'B Gentle' saw 'R 5109 2/u set' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "Row-crop recount for 'B-511' saw 'Super Boy 3/4 set' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "Row-crop recount for 'Looper' saw 'R5102 3/y set' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "Row-crop recount for 'B5102' saw 'Salomo Perry full pack' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "Row-crop recount for 'Salma Perry' saw 'Square full Pant' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "'Loop Square': main reading and row-crop recount agreed on a total of 0, but this row's own printed/circled total says 30. This could mean a misread cell -- or this number might not be a quantity total at all on this form (e.g. a bundle/pack count instead). Kept the agreed reading either way; worth a glance against the photo if unsure.",
+    "'Feather Box': main reading and row-crop recount agreed on a total of 0, but this row's own printed/circled total says 37. This could mean a misread cell -- or this number might not be a quantity total at all on this form (e.g. a bundle/pack count instead). Kept the agreed reading either way; worth a glance against the photo if unsure.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'Looper x 2 4232': main reading and row-crop recount disagree (55: main=- vs recount=3; 60: main=- vs recount=3; 65: main=- vs recount=3; 70: main=- vs recount=3; 75: main=- vs recount=3; 80: main=- vs recount=3; 85: main=- vs recount=2). Kept the main (default, unresolved) reading; verify this row against the photo.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'B-4749': main reading and row-crop recount disagree (: main=- vs recount=0). Kept the main (default, unresolved) reading; verify this row against the photo.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'B-4248': main reading and row-crop recount disagree (: main=- vs recount=0). Kept the main (default, unresolved) reading; verify this row against the photo.",
+    "NEEDS REVIEW (resolved) -- 'B-509': main reading and row-crop recount disagree (45: main=- vs recount=2; 50: main=- vs recount=3; 55: main=- vs recount=5; 60: main=- vs recount=5; 65: main=- vs recount=5; 70: main=- vs recount=5; 75: main=- vs recount=5; 80: main=- vs recount=3). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo.",
+    "NEEDS REVIEW (resolved) -- 'Super Boxer': main reading and row-crop recount disagree (45: main=- vs recount=3; 50: main=- vs recount=5; 55: main=- vs recount=5; 60: main=- vs recount=5; 65: main=- vs recount=5; 70: main=- vs recount=5; 75: main=- vs recount=5; 80: main=- vs recount=3). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'C41131': main reading and row-crop recount disagree (: main=- vs recount=0). Kept the main (default, unresolved) reading; verify this row against the photo.",
+    "NEEDS REVIEW (resolved) -- 'Elf force': main reading and row-crop recount disagree (60: main=- vs recount=3; 65: main=- vs recount=3; 70: main=- vs recount=3; 75: main=- vs recount=3; 80: main=- vs recount=3; 85: main=- vs recount=3; 90: main=- vs recount=2). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'Tech Tron': main reading and row-crop recount disagree (45: main=- vs recount=2; 50: main=- vs recount=5; 55: main=- vs recount=5; 60: main=- vs recount=5; 65: main=- vs recount=5; 70: main=- vs recount=5; 75: main=- vs recount=3; 80: main=- vs recount=3; 85: main=- vs recount=2). Kept the main (default, unresolved) reading; verify this row against the photo.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'XUV Half Short': main reading and row-crop recount disagree (L: main=- vs recount=13; M: main=- vs recount=11; S: main=- vs recount=9; XL: main=- vs recount=13; XXL: main=- vs recount=13). Kept the main (default, unresolved) reading; verify this row against the photo.",
+    "NEEDS REVIEW (resolved) -- 'MM K4532': main reading and row-crop recount disagree (50: main=- vs recount=6; 55: main=- vs recount=6; 60: main=- vs recount=6; 65: main=- vs recount=6; 70: main=- vs recount=6). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo.",
+    "NEEDS REVIEW (resolved) -- 'MM k 3674': main reading and row-crop recount disagree (45: main=- vs recount=6; 50: main=- vs recount=6; 55: main=- vs recount=6; 60: main=- vs recount=6; 65: main=- vs recount=6). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo.",
+    "NEEDS REVIEW (resolved) -- 'MM Looper 4289': main reading and row-crop recount disagree (45: main=- vs recount=5; 50: main=- vs recount=5; 55: main=- vs recount=5; 60: main=- vs recount=5; 65: main=- vs recount=5). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo.",
+    "NEEDS REVIEW (resolved) -- 'Nivi Brick': main reading and row-crop recount disagree (50: main=- vs recount=5; 55: main=- vs recount=5; 60: main=- vs recount=5; 65: main=- vs recount=5; 70: main=- vs recount=5). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo."
+  ],
+  "table_top_frac": 0.3,
+  "table_bottom_frac": 0.92
+}

@@ -1,0 +1,23 @@
+{
+  "party_name": "MURUGAN TEX",
+  "order_no": "",
+  "order_date": "",
+  "items": [
+    {"item": "BABYCARE DRAWER", "type": "JE", "quantities": {"45": 10, "50": 15, "55": 15, "60": 20, "65": 30}},
+    {"item": "COOLD COLOUR", "type": "RN", "quantities": {"85": 2, "90": 2}},
+    {"item": "BABYCARE JETTY", "type": "JE", "quantities": {"70": 25, "75": 30, "80": 30}},
+    {"item": "BLOOMER PRINT", "type": "JE", "quantities": {"50": 10, "60": 15, "65": 10, "70": 5}},
+    {"item": "BABYCARE JETTY", "type": "OE", "quantities": {"55": 5, "60": 5, "65": 5, "70": 5, "75": 5, "80": 5}},
+    {"item": "BLOOMER PLAIN", "type": "JE", "quantities": {"80": 3, "85": 3, "90": 5, "95": 3}},
+    {"item": "Doy JETTY", "type": "OE", "quantities": {"55": 5, "70": 5, "75": 5}},
+    {"item": "Doy DRAWER", "type": "OE", "quantities": {"60": 5, "65": 10, "70": 10, "75": 10, "80": 5}},
+    {"item": "TREND PLAIN", "type": "JE", "quantities": {"80": 3, "85": 4, "90": 7, "100": 5}},
+    {"item": "CALM WHITE", "type": "RN", "quantities": {"80": 5, "85": 6, "90": 6, "95": 3, "100": 2}},
+    {"item": "COOLD WHITE", "type": "RN", "quantities": {"85": 3, "90": 3, "95": 2}},
+    {"item": "CYCLING SHORTS COLOUR BABY", "type": "JE", "quantities": {"60": 10, "65": 10, "70": 20, "75": 10}},
+    {"item": "CYCLING SHORTS ADULTS", "type": "JE", "quantities": {"75": 5, "80": 5, "85": 10, "90": 5, "95": 5, "100": 10}}
+  ],
+  "notes": [
+    "olmOCR2 raw transcription -- no explicit notes captured (it missed the handwritten quote at the page bottom that mistral caught)."
+  ]
+}

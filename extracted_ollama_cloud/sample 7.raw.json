@@ -1,0 +1,246 @@
+{
+  "seller_name": "ESSA GARMENTS PRIVATE LIMITED",
+  "party_name": "Immue G. M. Yankarchi Cloth Store",
+  "order_no": "",
+  "order_date": "31/03/2026",
+  "size_headers": [
+    "45",
+    "50",
+    "55",
+    "60",
+    "65",
+    "70",
+    "75",
+    "80",
+    "85",
+    "90",
+    "95",
+    "100",
+    "105"
+  ],
+  "items": [
+    {
+      "item": "Exoda Plain",
+      "type": "IE",
+      "quantities": [
+        {
+          "size": "80",
+          "quantity": 30
+        },
+        {
+          "size": "85",
+          "quantity": 36
+        },
+        {
+          "size": "90",
+          "quantity": 58
+        },
+        {
+          "size": "95",
+          "quantity": 20
+        },
+        {
+          "size": "100",
+          "quantity": 20
+        }
+      ],
+      "row_total": "02 Bunch",
+      "row_top_frac": 0.22,
+      "row_bottom_frac": 0.28
+    },
+    {
+      "item": "Essa Trend",
+      "type": "IE",
+      "quantities": [
+        {
+          "size": "80",
+          "quantity": 10
+        },
+        {
+          "size": "85",
+          "quantity": 22
+        },
+        {
+          "size": "90",
+          "quantity": 20
+        },
+        {
+          "size": "95",
+          "quantity": 10
+        },
+        {
+          "size": "100",
+          "quantity": 10
+        }
+      ],
+      "row_total": "01 Bunch",
+      "row_top_frac": 0.28,
+      "row_bottom_frac": 0.34
+    },
+    {
+      "item": "Classy Vest (white)",
+      "type": "RN",
+      "quantities": [
+        {
+          "size": "80",
+          "quantity": 10
+        },
+        {
+          "size": "85",
+          "quantity": 22
+        },
+        {
+          "size": "90",
+          "quantity": 20
+        },
+        {
+          "size": "95",
+          "quantity": 10
+        },
+        {
+          "size": "100",
+          "quantity": 10
+        }
+      ],
+      "row_total": "01 Bunch",
+      "row_top_frac": 0.34,
+      "row_bottom_frac": 0.41
+    },
+    {
+      "item": "Coold Vest",
+      "type": "RN",
+      "quantities": [
+        {
+          "size": "80",
+          "quantity": 10
+        },
+        {
+          "size": "85",
+          "quantity": 22
+        },
+        {
+          "size": "90",
+          "quantity": 20
+        },
+        {
+          "size": "95",
+          "quantity": 10
+        },
+        {
+          "size": "100",
+          "quantity": 10
+        }
+      ],
+      "row_total": "01 Bunch",
+      "row_top_frac": 0.41,
+      "row_bottom_frac": 0.48
+    },
+    {
+      "item": "Image Trunk (OE)",
+      "type": "ICO",
+      "quantities": [
+        {
+          "size": "80",
+          "quantity": 16
+        },
+        {
+          "size": "85",
+          "quantity": 20
+        },
+        {
+          "size": "90",
+          "quantity": 20
+        },
+        {
+          "size": "95",
+          "quantity": 16
+        },
+        {
+          "size": "100",
+          "quantity": 16
+        }
+      ],
+      "row_total": "02 Bunch",
+      "row_top_frac": 0.48,
+      "row_bottom_frac": 0.56
+    },
+    {
+      "item": "Fair Lady Plain (OE)",
+      "type": "",
+      "quantities": [
+        {
+          "size": "75",
+          "quantity": 15
+        },
+        {
+          "size": "80",
+          "quantity": 15
+        },
+        {
+          "size": "85",
+          "quantity": 35
+        },
+        {
+          "size": "90",
+          "quantity": 35
+        },
+        {
+          "size": "95",
+          "quantity": 15
+        },
+        {
+          "size": "100",
+          "quantity": 15
+        }
+      ],
+      "row_total": "01 Bunch",
+      "row_top_frac": 0.56,
+      "row_bottom_frac": 0.65
+    },
+    {
+      "item": "Fair Lady Print (OE)",
+      "type": "",
+      "quantities": [
+        {
+          "size": "75",
+          "quantity": 15
+        },
+        {
+          "size": "80",
+          "quantity": 15
+        },
+        {
+          "size": "85",
+          "quantity": 35
+        },
+        {
+          "size": "90",
+          "quantity": 35
+        },
+        {
+          "size": "95",
+          "quantity": 15
+        },
+        {
+          "size": "100",
+          "quantity": 15
+        }
+      ],
+      "row_total": "01 Bunch",
+      "row_top_frac": 0.65,
+      "row_bottom_frac": 0.75
+    }
+  ],
+  "notes": [
+    "Direct Order",
+    "Bill it in Old Rate",
+    "Row-crop recount found no quantities for 'Exoda Plain' -- kept the original full-page reading.",
+    "Row-crop recount for 'Essa Trend' saw 'Exoda Plam IE' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "Row-crop recount for 'Image Trunk (OE)' saw 'Coold Vest' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row.",
+    "Row-crop recount found no quantities for 'Fair Lady Plain (OE)' -- kept the original full-page reading.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'Coold Vest': main reading and row-crop recount disagree (80: main=10 vs recount=-; 85: main=22 vs recount=-; 90: main=20 vs recount=-; 95: main=10 vs recount=-; 100: main=10 vs recount=-; : main=- vs recount=0). Kept the main (default, unresolved) reading; verify this row against the photo.",
+    "NEEDS REVIEW (UNRESOLVED) -- 'Fair Lady Print (OE)': main reading and row-crop recount disagree (70: main=- vs recount=15; 80: main=15 vs recount=35; 90: main=35 vs recount=15; 100: main=15 vs recount=-). Kept the main (default, unresolved) reading; verify this row against the photo."
+  ],
+  "table_top_frac": 0.21,
+  "table_bottom_frac": 0.75
+}

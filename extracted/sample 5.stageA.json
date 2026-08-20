@@ -1,0 +1,83 @@
+{
+  "seller_name": "ESSA GARMENTS PRIVATE LIMITED",
+  "party_name": "M.K. Enterprises",
+  "party_city": "TIRUPUR",
+  "order_no": "",
+  "order_date": "30/03/2026",
+  "size_headers": [
+    "45",
+    "50",
+    "55",
+    "60",
+    "65",
+    "70",
+    "75",
+    "80",
+    "85",
+    "90",
+    "95",
+    "100",
+    "105"
+  ],
+  "items": [
+    {
+      "item": "Trend Trunk",
+      "type": "IE"
+    },
+    {
+      "item": "Exoda Trunk",
+      "type": "IE"
+    },
+    {
+      "item": "Image FCD",
+      "type": "IE"
+    },
+    {
+      "item": "Fairlady Print",
+      "type": "IE"
+    },
+    {
+      "item": "Plain",
+      "type": "IE"
+    },
+    {
+      "item": "MYNA",
+      "type": "IE"
+    },
+    {
+      "item": "MYNA",
+      "type": "OE"
+    },
+    {
+      "item": "Exoda Bloomer Plain",
+      "type": "IE"
+    },
+    {
+      "item": "Bloomer Print",
+      "type": "IE"
+    },
+    {
+      "item": "Plain",
+      "type": "IE"
+    },
+    {
+      "item": "Classy W. Vest",
+      "type": "RN"
+    },
+    {
+      "item": "Classy W. Vest",
+      "type": "RNS"
+    },
+    {
+      "item": "F.G1-3005",
+      "type": "OE"
+    },
+    {
+      "item": "F.G1-302S",
+      "type": "OE"
+    }
+  ],
+  "notes": [
+    "Old Rate Supply Only"
+  ]
+}

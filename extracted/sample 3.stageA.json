@@ -1,0 +1,99 @@
+{
+  "seller_name": "ESSA GARMENTS PRIVATE LIMITED",
+  "party_name": "A.T Dibbawudas",
+  "party_city": "HYDERABAD",
+  "order_no": "",
+  "order_date": "31/03/2026",
+  "size_headers": [
+    "45",
+    "50",
+    "55",
+    "60",
+    "65",
+    "70",
+    "75",
+    "80",
+    "85",
+    "90",
+    "95",
+    "100",
+    "105"
+  ],
+  "items": [
+    {
+      "item": "Loose Full Pant",
+      "type": "18"
+    },
+    {
+      "item": "B-4749 Full Pant",
+      "type": "20"
+    },
+    {
+      "item": "B-4748 Full Pant",
+      "type": "22"
+    },
+    {
+      "item": "B Gentle Full Pant",
+      "type": "24"
+    },
+    {
+      "item": "B 5169 Blouse",
+      "type": "26"
+    },
+    {
+      "item": "B 5111 Blouse",
+      "type": "28"
+    },
+    {
+      "item": "Super Boy",
+      "type": ""
+    },
+    {
+      "item": "Loose Cotton",
+      "type": "30"
+    },
+    {
+      "item": "B 5107 Blouse",
+      "type": "32"
+    },
+    {
+      "item": "Salwar Kameez Full Pant",
+      "type": "34"
+    },
+    {
+      "item": "Eiffelge Full Pant",
+      "type": "36"
+    },
+    {
+      "item": "Tech Tron Full Pant",
+      "type": "38"
+    },
+    {
+      "item": "Feather Boy",
+      "type": "40"
+    },
+    {
+      "item": "XUV Half Short",
+      "type": "42"
+    },
+    {
+      "item": "MM K 532",
+      "type": "44"
+    },
+    {
+      "item": "MM K 3674 RNS T-Shirt",
+      "type": "46"
+    },
+    {
+      "item": "MM Loose Full Pant",
+      "type": "48"
+    },
+    {
+      "item": "Nivi Blouse",
+      "type": "50"
+    }
+  ],
+  "notes": [
+    "Old Rate Supply Only"
+  ]
+}

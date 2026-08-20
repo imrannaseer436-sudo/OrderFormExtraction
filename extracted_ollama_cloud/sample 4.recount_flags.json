@@ -1,0 +1,160 @@
+[
+  {
+    "status": "unverified",
+    "sizes": [
+      "45",
+      "50",
+      "55",
+      "60",
+      "65",
+      "70",
+      "75",
+      "80",
+      "85",
+      "90"
+    ],
+    "note": "Row-crop recount found no quantities for 'B.3825 SHORT SET' -- kept the original full-page reading."
+  },
+  {
+    "status": "resolved",
+    "sizes": [
+      "85",
+      "90"
+    ],
+    "note": "NEEDS REVIEW (resolved) -- 'B.3824 SHORT SET': main reading and row-crop recount disagree (85: main=1 vs recount=-; 90: main=1 vs recount=-). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo."
+  },
+  {
+    "status": "unverified",
+    "sizes": [
+      "45",
+      "50",
+      "55",
+      "60",
+      "65",
+      "70",
+      "75",
+      "80",
+      "85",
+      "90"
+    ],
+    "note": "Row-crop recount for 'TAB CASUAL 3/4th SET' saw 'SHORT SET RNBS' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row."
+  },
+  {
+    "status": "unverified",
+    "sizes": [
+      "65",
+      "70",
+      "75"
+    ],
+    "note": "Row-crop recount for 'D&M B4696 F/PANT SET' saw '3. TAQ CASUAL' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row."
+  },
+  {
+    "status": "unresolved",
+    "sizes": [
+      "45",
+      "50",
+      "55",
+      "60",
+      "65",
+      "70",
+      "75",
+      "80",
+      "85",
+      "90",
+      ""
+    ],
+    "note": "NEEDS REVIEW (UNRESOLVED) -- 'B.4749 F/PANT SET': main reading and row-crop recount disagree (45: main=1 vs recount=-; 50: main=1 vs recount=-; 55: main=1 vs recount=-; 60: main=1 vs recount=-; 65: main=1 vs recount=-; 70: main=1 vs recount=-; 75: main=1 vs recount=-; 80: main=1 vs recount=-; 85: main=1 vs recount=-; 90: main=1 vs recount=-; : main=- vs recount=0). Kept the main (default, unresolved) reading; verify this row against the photo."
+  },
+  {
+    "status": "unresolved",
+    "sizes": [
+      "45",
+      "50",
+      "55",
+      "60",
+      "65",
+      "70",
+      "75",
+      "80",
+      "85",
+      "90",
+      ""
+    ],
+    "note": "NEEDS REVIEW (UNRESOLVED) -- 'SPRIT F/PANT SET': main reading and row-crop recount disagree (45: main=1 vs recount=-; 50: main=1 vs recount=-; 55: main=1 vs recount=-; 60: main=1 vs recount=-; 65: main=1 vs recount=-; 70: main=1 vs recount=-; 75: main=1 vs recount=-; 80: main=1 vs recount=-; 85: main=1 vs recount=-; 90: main=1 vs recount=-; : main=- vs recount=0). Kept the main (default, unresolved) reading; verify this row against the photo."
+  },
+  {
+    "status": "unresolved",
+    "sizes": [
+      "45",
+      "50",
+      "90"
+    ],
+    "note": "NEEDS REVIEW (UNRESOLVED) -- 'GENTLE F/PANT SET': main reading and row-crop recount disagree (45: main=1 vs recount=-; 50: main=1 vs recount=-; 90: main=1 vs recount=-). Kept the main (default, unresolved) reading; verify this row against the photo."
+  },
+  {
+    "status": "resolved",
+    "sizes": [
+      "45",
+      "50"
+    ],
+    "note": "NEEDS REVIEW (resolved) -- 'TAB CASUAL F/P SET': main reading and row-crop recount disagree (45: main=1 vs recount=-; 50: main=1 vs recount=-). Kept the recount (matched this row's Total Dozen) reading; verify this row against the photo."
+  },
+  {
+    "status": "unverified",
+    "sizes": [
+      "45",
+      "50",
+      "55",
+      "60",
+      "65",
+      "70",
+      "75",
+      "80",
+      "85",
+      "90"
+    ],
+    "note": "Row-crop recount for 'LOOPER ZB 3964 SHORTS' saw 'S. TAQ. CASUAL' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row."
+  },
+  {
+    "status": "unverified",
+    "sizes": [
+      "45",
+      "50",
+      "55",
+      "60",
+      "65",
+      "70",
+      "75",
+      "80",
+      "85",
+      "90"
+    ],
+    "note": "Row-crop recount for 'CREED B4356' saw '9. Looper ZB 3964' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row."
+  },
+  {
+    "status": "unverified",
+    "sizes": [
+      "45",
+      "50",
+      "55",
+      "60",
+      "65",
+      "70",
+      "75",
+      "80",
+      "85",
+      "90"
+    ],
+    "note": "Row-crop recount for 'LOOPER ZB 3965' saw 'CREED B4356 / PANT' on that row instead -- alignment looked unreliable, kept the original full-page quantities for this row."
+  },
+  {
+    "status": "unresolved",
+    "sizes": [
+      "45",
+      "50",
+      "85",
+      "90"
+    ],
+    "note": "NEEDS REVIEW (UNRESOLVED) -- 'MYD D.7 3/4th PANT': main reading and row-crop recount disagree (45: main=1 vs recount=-; 50: main=1 vs recount=-; 85: main=1 vs recount=-; 90: main=1 vs recount=-). Kept the main (default, unresolved) reading; verify this row against the photo."
+  }
+]
