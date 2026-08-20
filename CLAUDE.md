@@ -3951,3 +3951,25 @@ and #7 (test on an easier form) from the list above -- neither attempted
 this session. Scratch outdir `extracted_ollama_cloud_hybrid_test/` from
 this session's two test runs removed after this write-up, per this
 project's established cleanup practice.
+
+## Repo cleanup + git init — 2026-08-20
+
+Two housekeeping passes, no pipeline code touched:
+
+**Cleanup:** removed `__pycache__/` and four leftover one-off comparison-
+test output dirs whose findings were already written up in prose above but
+had never actually been deleted (`extracted_ollama_cloud_hybrid_test/` —
+the 2026-08-19 hybrid-quantities test run, explicitly noted as "removed"
+in that section above but still on disk; `extracted_ollama_cloud_mistral_
+sample12/`, `_mistral_sample5/`, `_mistral_sample5scanned/` — mistral
+comparison runs from 2026-08-17). Kept the four deliberate default outdirs
+(`extracted/`, `extracted_claude/`, `extracted_ollama_cloud/`,
+`extracted_olmocr2/`) and both `usage_log*.csv` files, per the same
+distinction drawn in the 2026-08-14 cleanup section above.
+
+**Git init:** this project had no version control at all until now. Ran
+`git init`, added a `.gitignore` (`.env` — has real DB and API
+credentials — plus `.venv/`, `__pycache__/`), and made a root commit
+(126 files: all source, `Images/`, the four kept output dirs, both usage
+logs). No remote configured yet and nothing pushed — the user opted to
+prepare only, not push, this session.
