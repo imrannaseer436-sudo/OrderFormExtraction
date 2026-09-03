@@ -1,8 +1,25 @@
-ollama>=0.4.0        # python client for your local Ollama server
-pydantic>=2.0
-Pillow>=10.0.0        # cropping each row out of the source image before Stage B
-opencv-python>=4.8.0  # detecting the ruled table's row lines (grid.py)
-numpy>=1.24.0         # array ops for grid.py's line-density peak detection
-paddleocr>=3.0.0      # v6: reads each row's cells directly (ocr_cell_read.py), replacing the VLM there
-paddlepaddle>=3.0.0   # paddleocr's inference backend -- needs Python <=3.12 (no 3.13+ wheels yet);
-                      # use the project's .venv (3.11), not a newer system Python
+# Production pipeline: extract_ollama_cloud.py (Ollama Cloud + mistral-large-3:675b).
+# extract_ollama_cloud.py imports extract_claude.py for shared schemas/prompts/helpers,
+# and extract_claude.py itself imports the `anthropic` SDK -- so anthropic must be
+# installed even though its API is not called in the production path. It also imports
+# extract_ollama.py (build_header_crop/build_row_crop), which needs paddleocr/paddlepaddle
+# for the local CV+OCR machinery ocr_cell_read.py/grid.py provide. In short: every
+# dependency below is load-bearing for `python extract_ollama_cloud.py ...` to run,
+# even though the pipeline talks to Ollama Cloud, not a local model.
+#
+# Needs Python <=3.12 (paddlepaddle has no 3.13+ wheels yet) -- use this project's
+# .venv (py -3.11 -m venv .venv), not a bare system `python`/`py` call.
+
+ollama>=0.6.2           # Ollama Cloud client (chat(), format=<schema>, think=)
+anthropic>=0.68.0        # extract_claude.py's SDK import; not called in the production path
+pydantic>=2.0             # schema.py / extract_claude.py / extract_ollama_cloud.py models
+Pillow>=10.0.0             # image loading/cropping/EXIF handling
+opencv-python>=4.8.0        # grid.py row-boundary detection, preprocess_for_vlm.py deskew
+numpy>=1.24.0                 # array ops for grid.py / ocr_cell_read.py
+paddleocr>=3.0.0               # ocr_cell_read.py -- header/quantity OCR behind --hybrid-quantities
+paddlepaddle>=3.0.0              # paddleocr's inference backend
+python-dotenv>=1.0.0               # loads OLLAMA_API_KEY / DB credentials / ANTHROPIC_API_KEY from .env
+pyodbc>=5.0.0                        # brandlist_match.py -- SQL Server catalog cross-check;
+                                       # needs "ODBC Driver 17 for SQL Server" installed separately
+rapidfuzz>=3.0.0                        # fuzzy item-name/buyer-name matching in brandlist_match.py
+httpx>=0.28.0                             # raw HTTP bypass for think="max" (see extract_ollama_cloud.py)

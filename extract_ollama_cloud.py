@@ -1,64 +1,57 @@
 #!/usr/bin/env python3
 """
-extract_ollama_cloud.py -- Ollama Cloud comparison test (additive, experimental).
+extract_ollama_cloud.py -- production pipeline: Ollama Cloud + mistral-large-3.
 
-Tests a hosted open-weight vision model (via Ollama Cloud) as an alternative
-to extract_claude.py's Claude API calls, for COMPARISON PURPOSES ONLY -- not
-a replacement for extract_claude.py, which remains the recommended pipeline
-(see CLAUDE.md). This file does not modify extract_claude.py or any other
-existing file: it imports that file's already-tuned Pydantic schemas
+Reads structured order-form data from a photo via a hosted vision model on
+Ollama Cloud. This is the pipeline this project runs in production. It
+started as a comparison test against extract_claude.py (the Claude API
+pipeline, kept in the repo only because this file imports its schemas/
+prompts/helpers -- see below) and became the production choice once
+mistral-large-3:675b was shown to match Claude's accuracy on this project's
+test forms at a fraction of the cost. Full model-comparison history (why
+gemma4:31b/qwen3.5:397b/kimi/glm were tried and set aside) lives in
+HISTORY.md, not repeated here.
+
+This file imports extract_claude.py's already-tuned Pydantic schemas
 (ExtractedForm, ExtractedItem, QuantityPair, QuantityRecount,
 RowQuantityReading) and prompt text (SYSTEM_PROMPT_TEMPLATE via
 build_system_prompt, RECOUNT_SYSTEM_PROMPT) verbatim, and reuses its
 crop/validate/merge helpers (_prepare_image, _prepare_table_crop,
 _build_row_crops, _validate_row_fracs, _apply_recount, _to_order_form,
 _write_debug_artifacts, flatten_for_review) rather than reimplementing that
-logic. Only the model-call sites differ: this file talks to Ollama's chat()
-API instead of Anthropic's messages API. The overall architecture (one
-schema-constrained main call -> per-row-crop recount pass, run as N parallel
-calls -> agree-or-flag merge via _apply_recount) is unchanged from
-extract_claude.py -- see that file's module docstring and CLAUDE.md for the
-full rationale.
+logic -- extract_claude.py is a required dependency of this file, even
+though its own Claude API calls are not part of the production path. Only
+the model-call sites differ: this file talks to Ollama's chat() API instead
+of Anthropic's messages API.
 
-MODEL CHOICE -- confirmed by direct testing (2026-08-11), not assumed:
-the originally-targeted qwen3-vl:235b-cloud is RETIRED on Ollama Cloud (a
-live call returns HTTP 410, "retired at 2026-06-16"). Of the plausible
-large-model substitutes listed by the Cloud API, most require a paid
-Ollama plan this project's API key doesn't have (qwen3.5:397b, glm-5.1,
-glm-5.2, kimi-k3 all returned HTTP 403 "requires a subscription");
-nemotron-3-super explicitly rejects image input (HTTP 400 "this model does
-not support image input"); minimax-m3 accepts an images param but answered
-a direct color-identification sanity check incorrectly (a solid red test
-square) -- accepted, but not trustworthy. gemma4:31b is the only model that
-was BOTH accessible on this account's plan AND answered that same sanity
-check correctly ("Red"). DEFAULT_MODEL below reflects that real result, not
-the model named in the original task -- override with --model once/if a
-paid plan unlocks one of the gated candidates.
+DEFAULT MODEL: mistral-large-3:675b. Confirmed via extensive real-run
+testing (see HISTORY.md) to be the most reliable Ollama Cloud vision model
+for this task -- fast (~30-70s/image), zero observed flakes across dozens
+of runs, and its remaining accuracy gaps (column-position drift, missed
+overflow columns, row misattribution on dense tables) are corrected by the
+--hybrid-quantities pass below rather than needing a different model.
 
 STRUCTURED-OUTPUT RELIABILITY -- confirmed by direct testing, a real
 difference from both extract_claude.py's Claude calls and the local Ollama
 pipeline's qwen2.5vl calls (extract_ollama.py): passing format=<json
-schema> to Ollama Cloud's gemma4:31b does NOT strictly constrain the
-output the way Anthropic's structured outputs or local qwen2.5vl's grammar
-constraint do. A real call against sample 5.jpeg, with format= set to
-ExtractedForm's schema, came back (a) wrapped in ```json ... ``` markdown
-fences, (b) missing a required field (order_no) entirely, (c) carrying an
-extra top-level key not in the schema at all ("layout"), and (d) using
-JSON null for non-nullable string fields (row_total) instead of "". None
-of this is a formatting nicety Pydantic's default lax coercion papers
-over -- model_validate_json() raised on the raw text (invalid JSON, due to
-the fences) and model_validate() on the fence-stripped dict raised 13
-separate validation errors. _strip_json_fences() and _normalize_for_schema()
+schema> to Ollama Cloud models does NOT always strictly constrain output the
+way Anthropic's structured outputs or local qwen2.5vl's grammar constraint
+do (confirmed on gemma4:31b, an earlier default -- see HISTORY.md). A
+response can come back wrapped in ```json ... ``` markdown fences, missing
+a required field, carrying an extra undeclared key, or using JSON null for
+a non-nullable string field. _strip_json_fences() and _normalize_for_schema()
 below exist specifically to repair this before validation runs, so the
 same field validators/model validators ExtractedForm and friends already
 have (ditto forward-fill, trailing style-code split, order_date cleanup)
 still get a fair shot at running on real field values instead of erroring
-out first on a missing key or a stray null.
+out first on a missing key or a stray null. mistral-large-3:675b (the
+production default) has not needed this repair path in practice, but it's
+kept as a safety net for any model.
 
 Usage:
     python3 extract_ollama_cloud.py "Images/sample 5.jpeg"
     python3 extract_ollama_cloud.py Images/ --outdir extracted_ollama_cloud
-    python3 extract_ollama_cloud.py Images/ --model gemma4:31b
+    python3 extract_ollama_cloud.py Images/ --model mistral-large-3:675b
 
 Prerequisite: OLLAMA_API_KEY=... in .env (an Ollama Cloud API key from
 ollama.com/settings/keys) -- added as a new line, same convention as this
@@ -71,11 +64,13 @@ separate from every other pipeline's output directory):
     <name>.stageA.json         -- {seller_name, size_headers} only, for generate_review.py
     <name>.recount_flags.json  -- per-row agree-or-flag status, see _apply_recount in extract_claude.py
     <name>.brandlist.json      -- per-item catalog match/suggestion notes (skipped if --no-brandlist-check)
+    <name>.party_check.json    -- buyer-name cross-check against the DB (only written when a match is found)
+    <name>.hybrid_debug.json   -- OCR candidate/header data behind --hybrid-quantities (only when it runs)
     review.csv                 -- flattened, one row per (item, size)
 
 Every call (main or per-row/whole-table recount) appends one row to a
 persistent usage log, kept entirely separate from extract_claude.py's own
-usage_log.csv so this experiment's numbers never mix with the real Claude
+usage_log.csv so this pipeline's numbers never mix with the Claude
 pipeline's cost/usage record (default ./usage_log_ollama_cloud.csv, override
 with --usage-log). Columns mirror usage_log.csv's shape where they apply
 (input_tokens <- prompt_eval_count, output_tokens <- eval_count;
@@ -92,6 +87,7 @@ truncated call's real cost).
 """
 
 import argparse
+import base64
 import concurrent.futures
 import csv
 import io
@@ -105,6 +101,7 @@ from typing import List
 from datetime import datetime, timezone
 from pathlib import Path
 
+import httpx
 import numpy as np
 import ollama
 from dotenv import load_dotenv
@@ -113,12 +110,13 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 
 import brandlist_match
 from grid import iter_row_boundary_candidates_auto
-from ocr_cell_read import get_ocr, item_alignment_ok, ocr_row, _try_digit_correct, _monotonic_assign
+from ocr_cell_read import get_ocr, item_alignment_ok, ocr_row, _try_digit_correct, _monotonic_assign, _split_merged_qty_token
 from preprocess_for_vlm import preprocess_for_vlm
 from extract_ollama import build_header_crop, build_row_crop
 from schema import OrderForm
 from extract_claude import (
     IMAGE_EXTENSIONS,
+    KNOWN_STYLE_CODES,
     MAX_LONG_EDGE,
     ExtractedForm,
     ExtractedItem,
@@ -129,6 +127,7 @@ from extract_claude import (
     RECOUNT_SYSTEM_PROMPT,
     USER_PROMPT,
     _EMPTY_ROW_READING_KWARGS,
+    _TRAILING_CODE_RE,
     _apply_recount,
     _build_row_crops,
     _parse_int_or_none,
@@ -141,16 +140,17 @@ from extract_claude import (
     flatten_for_review,
 )
 
-# See module docstring's "MODEL CHOICE" section for why this isn't
-# qwen3-vl:235b-cloud (the originally-targeted model, confirmed retired).
-DEFAULT_MODEL = "gemma4:31b"
+# Production default. See module docstring / HISTORY.md for the model
+# comparison this was chosen from.
+DEFAULT_MODEL = "mistral-large-3:675b"
 OLLAMA_CLOUD_HOST = "https://ollama.com"
 
 # Analogous to extract_claude.py's MAX_TOKENS/RECOUNT_ROW_MAX_TOKENS, passed
-# as options.num_predict. A real single-image main call against sample
-# 5.jpeg used eval_count=2938 of this budget (see CLAUDE.md's dated section
-# for this test) -- generous headroom kept here since gemma4:31b's real
-# per-form output size on a denser form hasn't been characterized yet.
+# as options.num_predict. mistral-large-3:675b's real per-form output on
+# this project's forms runs roughly 1500-4000 output tokens (see
+# usage_log_ollama_cloud.csv) -- kept at 32000 anyway as headroom for a
+# denser form than any tested so far, since a truncated call wastes the
+# whole call's cost/latency for nothing.
 MAX_TOKENS = 32000
 RECOUNT_ROW_MAX_TOKENS = 8000
 RECOUNT_MAX_TOKENS = 32000  # whole-table fallback call only, mirrors extract_claude.py
@@ -209,6 +209,75 @@ THINK = False
 # re-run.
 
 
+class MistralExtractedItem(BaseModel):
+    """Mistral-only variant of extract_claude.py's ExtractedItem -- NOT a
+    subclass, for the same schema-property-ordering reason
+    MistralExtractedForm isn't a subclass of ExtractedForm (see that
+    class's own docstring). struck_out must be generated BEFORE quantities/
+    row_total for the gating below to mean anything -- committing to "is
+    this row cancelled" before the model has already started generating
+    quantity-shaped text for it, mirroring date_present's own placement
+    rule exactly.
+
+    Confirmed necessary 2026-09-01: sample 3-scanned.jpg has one row
+    ("Super Boy 3/4") struck through top to bottom in the photo -- no real
+    marks anywhere in it, and its own printed total is blank, the only
+    blank total on this 20-row form -- yet the main call reported a full,
+    plausible-looking set of quantities for it anyway, borrowed from a
+    neighboring row via the same cluster-competition mechanism
+    _realign_row_clusters_by_total's own docstring documents fixing for a
+    different case. A blank row_total is used as a MODEL-AGNOSTIC proxy for
+    "possibly void" in _hybrid_ocr_quantities (works for every model,
+    including gemma4:31b, which actually produced the reported bug), but
+    it's only a proxy -- a row's total could be blank for other reasons
+    (illegible, smudged) without the row being void at all. Asking mistral
+    directly whether a row is struck through is a stronger, more direct
+    signal where it's available -- the same "recognize an annotation a
+    model can see but OCR/coordinates can't" principle already used for
+    the date-presence case."""
+    model_config = ConfigDict(extra="forbid")
+    item: str = Field(description="Product/article name exactly as written (Particulars column), with ditto marks expanded per the DITTO MARKS rule.")
+    type: str = Field(description="Style/variant code from the Style column (e.g. IE, OE, RN, RNS). Empty string if there is no separate Style column or it's blank for this row.")
+    struck_out: bool = Field(description="True if this entire row has a line drawn through it by hand (e.g. a single stroke across the item name and/or its quantity cells) -- a cancellation mark, not normal handwriting. False for every ordinary row, even one with a blank or illegible cell.")
+    letter_sizes: bool = Field(description="True if this row's quantities are written using standard clothing letter sizes (S, M, L, XL, XXL, etc.) instead of aligning to this form's printed numeric size-column headers -- each letter usually stacked directly above its own quantity digit, in a cramped two-line cell. False for an ordinary row using the printed numeric grid, even one with blank or illegible cells. Decide this BEFORE reading quantities -- if true, still report each visible letter+quantity pair you can read in quantities using the letter as the size (per the LETTER SIZES rule), but do not force any of them into the nearest printed numeric column.")
+    quantities: List[QuantityPair] = Field(description="One entry per size column with a legible quantity for this row. Empty list if the row has no readable quantities, or if struck_out is true.")
+    row_total: str = Field(description="This row's own printed or circled running total (e.g. a 'Total Dozen' column, or a circled number in the margin), exactly as written, regardless of what it's labeled or where on the row it appears. Empty string if this form has no such total, it's blank for this row, or struck_out is true.")
+    row_top_frac: float = Field(description="0.0-1.0 fraction of image height where THIS item's own row starts. See row_top_frac/row_bottom_frac rule.")
+    row_bottom_frac: float = Field(description="0.0-1.0 fraction of image height where THIS item's own row ends.")
+
+    @model_validator(mode="after")
+    def _gate_on_struck_out(self) -> "MistralExtractedItem":
+        # Defense in depth, same pattern as MistralExtractedForm's own
+        # date-presence gate -- don't rely on the model honoring the
+        # "must be empty" instructions above perfectly.
+        if self.struck_out:
+            self.quantities = []
+            self.row_total = ""
+        return self
+
+    @model_validator(mode="after")
+    def _split_trailing_style_code(self) -> "MistralExtractedItem":
+        # Identical to ExtractedItem's own validator of the same name --
+        # duplicated rather than imported/shared, so this class stays
+        # self-contained (its whole point is to be a drop-in stand-in for
+        # ExtractedItem during parsing, converted away immediately after --
+        # see _mistral_form_to_extracted_form).
+        if not self.type and self.item in KNOWN_STYLE_CODES:
+            self.type = self.item
+            self.item = ""
+            return self
+        m = _TRAILING_CODE_RE.match(self.item)
+        if not m:
+            return self
+        code = m.group("code")
+        if not self.type and code in KNOWN_STYLE_CODES:
+            self.item = m.group("name")
+            self.type = code
+        elif self.type and code == self.type:
+            self.item = m.group("name")
+        return self
+
+
 class MistralExtractedForm(BaseModel):
     """Mistral-only variant of extract_claude.py's ExtractedForm -- NOT a
     subclass, a fully parallel definition, because Pydantic appends a
@@ -234,7 +303,7 @@ class MistralExtractedForm(BaseModel):
     date_present: bool = Field(description="True only if an actual calendar date (a day, month, and year -- however abbreviated, e.g. '30/3/26') is written or printed anywhere on the page. False if there is no such date -- a pre-printed day-of-week label alone (e.g. a diary/planner page's \"MONDAY\") is NOT a date and does not count; decide this before you consider what order_date should be.")
     order_date: str = Field(description="Date normalized to DD/MM/YYYY, assuming 20xx for 2-digit years. ONLY the final value. Must be an empty string whenever date_present is false -- never invent or estimate a date just to fill this field.")
     size_headers: List[str] = Field(description="GRID LAYOUT: every size column header across the top of the shared table, left to right, exactly as printed. FREE-FORM LAYOUT (no single shared table): empty list.")
-    items: List[ExtractedItem] = Field(description="Every product/article row, top to bottom, in order.")
+    items: List[MistralExtractedItem] = Field(description="Every product/article row, top to bottom, in order.")
     notes: List[str] = Field(description="Page-level handwritten notes and anything illegible/unusual not tied to one row's quantities.")
     table_top_frac: float = Field(description="0.0-1.0 fraction of image height where the item data starts -- GRID LAYOUT: the header row; FREE-FORM LAYOUT: the first item's own data. See table_top_frac/table_bottom_frac rule.")
     table_bottom_frac: float = Field(description="0.0-1.0 fraction of image height where the last item's data ends, including any row squeezed into an irregular space (e.g. outside the main ruled grid in GRID LAYOUT, or a page margin in FREE-FORM LAYOUT).")
@@ -253,11 +322,19 @@ class MistralExtractedForm(BaseModel):
 def _mistral_form_to_extracted_form(m: MistralExtractedForm) -> ExtractedForm:
     """Converts a parsed MistralExtractedForm into a regular ExtractedForm
     -- date_present is consumed here (already applied via the gating
-    validator above) and dropped, so every function downstream of the main
-    call keeps working with the exact same ExtractedForm shape it already
-    expects, unaware this schema swap ever happened. Constructing a fresh
-    ExtractedForm also runs ITS OWN validators (_clean_order_date,
-    _forward_fill_ditto_item_names) on the way in, same as any other
+    validator above) and dropped, and each MistralExtractedItem is
+    converted into a plain ExtractedItem the same way (struck_out is
+    consumed and dropped; quantities/row_total were already forced empty
+    by MistralExtractedItem's own gating validator if struck_out was true,
+    so this conversion doesn't need to repeat that check). So every
+    function downstream of the main call -- including
+    _hybrid_ocr_quantities's own, separate, model-agnostic blank-total
+    handling in _realign_row_clusters_by_total -- keeps working with the
+    exact same ExtractedForm/ExtractedItem shape it already expects,
+    unaware either schema swap ever happened. Constructing fresh objects
+    also runs THEIR OWN validators (_clean_order_date,
+    _forward_fill_ditto_item_names, ExtractedItem's own
+    _split_trailing_style_code) on the way in, same as any other
     ExtractedForm."""
     return ExtractedForm(
         seller_name=m.seller_name,
@@ -265,7 +342,17 @@ def _mistral_form_to_extracted_form(m: MistralExtractedForm) -> ExtractedForm:
         order_no=m.order_no,
         order_date=m.order_date,
         size_headers=m.size_headers,
-        items=m.items,
+        items=[
+            ExtractedItem(
+                item=it.item,
+                type=it.type,
+                quantities=it.quantities,
+                row_total=it.row_total,
+                row_top_frac=it.row_top_frac,
+                row_bottom_frac=it.row_bottom_frac,
+            )
+            for it in m.items
+        ],
         notes=m.notes,
         table_top_frac=m.table_top_frac,
         table_bottom_frac=m.table_bottom_frac,
@@ -313,7 +400,36 @@ printed anywhere on this page? A day-of-week label alone does not count. If date
 order_date must be an empty string -- do not estimate, guess, or reuse a date from anywhere else in \
 your reasoning just to have something to put there.
 
+- STRUCK-OUT / CANCELLED ROWS: on a real test form, one row had a line drawn by hand through the \
+entire row (the item name and every quantity cell) -- a cancellation, with no real handwritten \
+quantities anywhere in it -- yet you reported a full set of plausible-looking quantities for it \
+anyway. Decide struck_out FIRST for each row, before reading its quantities: does this row have an \
+actual pen/pencil line drawn through it, separate from the row's own printed ruling and separate from \
+normal handwriting? If struck_out is true, quantities must be an empty list and row_total must be an \
+empty string -- do not read, guess, or borrow numbers from a neighboring row just to have something to \
+put there. A row that is merely blank (no handwriting at all, but also no line through it) is NOT \
+struck_out -- leave struck_out false and quantities empty for that case instead.
+
 """
+
+# A "LETTER-SIZE ROWS: SET letter_sizes=true FROM THE CELL'S SHAPE, EVEN IF
+# A LETTER IS TOO FAINT TO READ CONFIDENTLY" bullet was tried here
+# 2026-09-02, targeting sample 3-scanned.jpg's MM K4532 row (see CLAUDE.md's
+# dated section) -- REVERTED after 3 consecutive real live runs (2 before
+# this bullet existed, 1 after) all came back letter_sizes=false for that
+# exact row, no change. A genuinely different angle from the two general
+# LETTER SIZES bullets already in this prompt (framed around the cell's
+# STRUCTURAL SHAPE -- two stacked lines -- rather than asking the model to
+# read the letter text itself), but it made no measurable difference. Per
+# this project's own established practice (see the 105/110 case and
+# sample 12's column-shift bullets elsewhere in CLAUDE.md), this is one real
+# attempt at a new hypothesis, not yet the 3-4 tries that earlier cases
+# needed before being called a settled ceiling -- but not worth spending
+# more live-call budget re-wording without a genuinely different mechanism.
+# The crop-based recovery mechanism itself (_recover_letter_size_row_digits,
+# _infer_letter_columns) is confirmed working correctly WHEN the flag fires
+# (tested with it supplied synthetically) -- the model just isn't setting it
+# on this specific row in practice, a real, separate, still-open gap.
 
 # An "ASTERISK (*) CELLS ARE A RATIO MARKER" bullet was tried here
 # 2026-08-14, targeting sample 10.jpeg (a printed/typed, non-ESSA form
@@ -475,6 +591,20 @@ def _normalize_value(val, annotation):
             return int(val)
         except (TypeError, ValueError):
             return 0
+    if annotation is bool:
+        # Confirmed necessary 2026-08-20: this generic normalizer predates
+        # MistralExtractedForm.date_present (the first bool field any reused
+        # schema has ever had), so a null date_present sailed straight
+        # through to Pydantic and hard-failed BOTH retry attempts on a real
+        # run (sample 13-scanned.jpg) instead of being repaired like every
+        # other type already handled above. False is the safe default here
+        # specifically -- it's also date_present's own documented meaning
+        # ("no date"), so an unparseable value degrades to the same
+        # no-fabricated-date outcome as a confident False, never a
+        # fabricated True.
+        if isinstance(val, bool):
+            return val
+        return False
     return val
 
 
@@ -540,6 +670,64 @@ def _neutralize_schema_examples(schema: dict) -> dict:
     return schema
 
 
+class _RawChatResponse:
+    """Minimal stand-in for ollama._types.ChatResponse, built from a raw
+    HTTP JSON body -- just enough attribute access (.done_reason,
+    .message.content, .prompt_eval_count, .eval_count) for _call_schema's
+    own code below to treat it identically to a real SDK response, without
+    needing to know which path produced it."""
+    class _Message:
+        def __init__(self, content: str):
+            self.content = content
+
+    def __init__(self, data: dict):
+        self.done_reason = data.get("done_reason")
+        self.message = self._Message(data.get("message", {}).get("content", ""))
+        self.prompt_eval_count = data.get("prompt_eval_count")
+        self.eval_count = data.get("eval_count")
+
+
+def _chat_bypassing_sdk_validation(client: ollama.Client, model: str, messages: list[dict], format_schema: dict, options: dict, think: str, timeout: float = 280.0) -> "_RawChatResponse":
+    """Raw HTTP call to Ollama Cloud's /api/chat, bypassing the ollama
+    Python package's OWN client-side Pydantic validation of the `think`
+    field -- confirmed 2026-09-02: that field is typed as
+    `bool | Literal['low','medium','high']` in the installed SDK version,
+    so passing think='max' (glm-5.3-flash's own documented top reasoning
+    tier, per ollama.com/library/glm-5.3-flash) raises a ValidationError
+    before any request is even sent. A direct, unvalidated HTTP call to
+    the same endpoint with think='max' in the JSON body returned a normal
+    200 response -- the Ollama Cloud API itself accepts it fine; this is
+    purely an outdated client-library type hint, not a server limitation.
+    Reuses the already-authenticated client's own base_url/auth header
+    (client._client is the underlying httpx.Client `ollama.Client` already
+    built in get_client()) rather than re-deriving credentials here."""
+    # The SDK base64-encodes raw image bytes before serializing a request
+    # (see ollama._types.Image.serialize_model) -- bypassing the SDK means
+    # doing that encoding step ourselves; every other message field passes
+    # through unchanged.
+    wire_messages = []
+    for msg in messages:
+        wire_msg = dict(msg)
+        if "images" in wire_msg:
+            wire_msg["images"] = [base64.b64encode(img).decode() for img in wire_msg["images"]]
+        wire_messages.append(wire_msg)
+
+    resp = client._client.post(
+        "/api/chat",
+        json={
+            "model": model,
+            "messages": wire_messages,
+            "format": format_schema,
+            "options": options,
+            "think": think,
+            "stream": False,
+        },
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    return _RawChatResponse(resp.json())
+
+
 def _call_schema(
     client: ollama.Client,
     model: str,
@@ -561,13 +749,26 @@ def _call_schema(
 
     t0 = time.perf_counter()
     try:
-        resp = client.chat(
-            model=model,
-            messages=messages,
-            format=_neutralize_schema_examples(schema_model.model_json_schema()),
-            options={"temperature": 0, "num_predict": max_tokens},
-            think=THINK,
-        )
+        if THINK == "max":
+            # 'max' is glm-5.3-flash's own documented top reasoning tier,
+            # but the installed ollama SDK's think field only accepts
+            # bool | 'low' | 'medium' | 'high' -- see
+            # _chat_bypassing_sdk_validation's own docstring for the real
+            # HTTP call that confirmed the SERVER accepts 'max' fine.
+            resp = _chat_bypassing_sdk_validation(
+                client, model, messages,
+                _neutralize_schema_examples(schema_model.model_json_schema()),
+                {"temperature": 0, "num_predict": max_tokens},
+                THINK,
+            )
+        else:
+            resp = client.chat(
+                model=model,
+                messages=messages,
+                format=_neutralize_schema_examples(schema_model.model_json_schema()),
+                options={"temperature": 0, "num_predict": max_tokens},
+                think=THINK,
+            )
     except Exception as exc:
         return None, str(exc), {"prompt_eval_count": None, "eval_count": None, "duration_seconds": time.perf_counter() - t0}
 
@@ -824,50 +1025,6 @@ def _rescale_for_ocr(original_bytes: bytes, skew: float, target_width: int = _OC
     return img.resize((target_width, round(img.height * scale)), Image.LANCZOS)
 
 
-_HYBRID_ROW_LINE_RE = re.compile(r"ROW\s+(\d+)\s*:(.*)", re.IGNORECASE)
-
-
-def _split_merged_qty_token(text: str, box: list[float]) -> list[tuple[int, float]] | None:
-    """Re-segments a single OCR token that's almost certainly two adjacent
-    quantity numbers PaddleOCR fused into one detection (e.g. two
-    handwritten "30"s next to each other read as one token "3030") into two
-    separate (qty, x_center) candidates, instead of the qty > 500 case being
-    dropped outright (2026-08-17's documented gap -- "not recovered/split
-    here", see CLAUDE.md's hybrid-quantities section).
-
-    Tries every internal split point and keeps it ONLY if EXACTLY ONE split
-    point yields two valid (1-500, no spurious leading zero) integers --
-    checked at every position rather than just the middle, since a merge of
-    two differently-sized numbers (e.g. "5"+"30" -> "530") won't split
-    evenly. Requiring uniqueness matters because a token like "1010" splits
-    validly at two different points (10|10 and 101|0 -- the latter rejected
-    by the leading-zero-on-neither-side check, but "255" would split at both
-    2|55 and 25|5 with nothing to prefer one over the other) -- an ambiguous
-    split is worse than no value at all, matching the qty > 500 case's own
-    existing "leave it out rather than invent a value" principle. On a
-    unique split, the box's pixel width is divided proportionally by
-    character position to estimate each half's own x-center, so downstream
-    row/column assignment (which keys entirely off x-position) still works
-    on the recovered values."""
-    if not text.isdigit() or len(text) < 2:
-        return None
-    x0, x1 = box[0], box[2]
-    width = x1 - x0
-    valid_splits = []
-    for i in range(1, len(text)):
-        left, right = text[:i], text[i:]
-        if (len(left) > 1 and left.startswith("0")) or (len(right) > 1 and right.startswith("0")):
-            continue
-        lv, rv = int(left), int(right)
-        if 1 <= lv <= 500 and 1 <= rv <= 500:
-            valid_splits.append((i, lv, rv))
-    if len(valid_splits) != 1:
-        return None
-    i, lv, rv = valid_splits[0]
-    split_x = x0 + width * (i / len(text))
-    return [(lv, (x0 + split_x) / 2), (rv, (split_x + x1) / 2)]
-
-
 def _split_merged_header_token(text: str, box: list[float], size_headers: list[str]) -> list[tuple[str, float]] | None:
     """Re-segments a single OCR token that fuses two or more adjacent SIZE
     HEADER labels into one detection (e.g. "100" and "105" read as one
@@ -968,15 +1125,594 @@ def _flag_hybrid_total_mismatch(quantities: dict[str, int], printed_total: int |
     return f"sums to {total}, but this row's own printed total is {printed_total} -- likely a missed or extra value, not auto-corrected"
 
 
-def _hybrid_ocr_quantities(client: ollama.Client, model: str, image_path: Path, extracted: ExtractedForm, outdir: Path | None = None) -> tuple[dict[int, dict[str, int]], list[str]]:
-    """Reads quantities by giving mistral REAL, OCR-measured coordinates
-    (not its own self-report) for headers and quantity marks, then asking
-    it to group each mark with its nearest header by x-position -- a
-    single OCR pass on the whole image (no per-row crops, no grid.py row-
-    boundary detection), so this sidesteps both root causes behind the
-    2026-08-17 --cv-quantities revert (PaddleOCR's inconsistent internal
-    resize on stitched crops; grid.py's row-boundary detection getting
-    confused by an extra letterhead row).
+def _reconcile_hybrid_with_vlm(vlm_map: dict[str, int], hybrid_map: dict[str, int], printed_total: int | None, size_headers: set[str]) -> tuple[dict[str, int], dict | None]:
+    """Reconciles hybrid OCR's reading for a row against the VLM's OWN
+    main-call reading for that same row, instead of _hybrid_ocr_quantities's
+    caller unconditionally overwriting one with the other (confirmed the
+    wrong shape 2026-09-02 -- see CLAUDE.md's "WHY hybrid and the VLM need to
+    complement each other" section). hybrid (pixel-grounded OCR) is kept as
+    the default in every case -- the only thing this function ever does is
+    (a) arbitrate a pure VALUE disagreement on an otherwise-IDENTICAL column
+    set via this row's own printed total, when that arbitration carries no
+    positional ambiguity, or (b) surface a flag when the two sources
+    disagree about which COLUMNS even hold this row's data, without ever
+    acting on it.
+
+    This is deliberately more conservative than an earlier version of this
+    function tried and shipped the same day: that version also treated a
+    DIFFERENT column set as reconcilable (preferring whichever of
+    hybrid-alone / vlm-alone / a union matched the printed total), on the
+    theory that a hybrid-missing cell the VLM caught (CLAUDE.md's "row 4"
+    evidence) is real, recoverable signal. Two separate, real, live-run
+    regressions disproved that a same-call self-reported row_total is
+    trustworthy enough to arbitrate a COLUMN disagreement: sample
+    5-scanned.jpg's "Bloomers Plain"/"F.G-3025" rows (the model read an
+    entirely different header block that also happened to foot its own
+    row_total) and sample 12-scanned.jpg's "TA22 Short" row (a genuine
+    2-column shift that still shared 4 of 7 columns with the correct
+    reading, so a "some overlap" guard alone didn't catch it either -- and
+    critically, hybrid's OWN correct reading did NOT match this row's
+    printed total, ruling out "does hybrid already match" as a safe
+    discriminator too). In both cases vlm_map's quantities and its own
+    row_total came from the SAME model call, so "vlm's reading sums to its
+    own total" is nearly tautological (self-consistency), not independent
+    corroboration -- unlike hybrid matching the total, which genuinely is
+    independent evidence, since hybrid is a different mechanism entirely.
+    A pure value conflict on an IDENTICAL column set has no such positional
+    ambiguity to exploit (both sources already agree on which columns
+    matter), so the total safely arbitrates only that narrower case.
+
+    Net effect: a hybrid-missing real mark (row 4's shape) is no longer
+    auto-recovered -- it's flagged instead, so a human notices hybrid's
+    blind spot without risking a column-shifted VLM reading silently
+    overwriting an already-correct row elsewhere. Matches this project's
+    own established "a model being honestly wrong beats a model being
+    confidently wrong" principle (see CLAUDE.md's "Design decisions worth
+    preserving") applied to hybrid's own blind spots, not just the VLM's.
+
+    Returns (merged_map, flag) -- flag is None when there's nothing here
+    worth a reviewer's attention (the caller still runs its own
+    _flag_hybrid_total_mismatch checksum check on the merged map in that
+    case, unchanged); otherwise the same {"status","sizes","note"} shape
+    generate_review.py already renders for hybrid/recount flags."""
+    if not hybrid_map or not vlm_map or not set(hybrid_map) <= size_headers:
+        # Empty hybrid (voided/struck-out row, or hybrid found nothing): keep
+        # as-is, nothing to reconcile against. Empty vlm_map: no independent
+        # signal to check hybrid against either. hybrid_map using a key
+        # outside this form's own printed size_headers means it already
+        # resolved a DIFFERENT, more-authoritative axis (a letter-coded row
+        # via the letter-size-sharing mechanism, or a numeric overflow column
+        # via _split_merged_header_token) -- vlm_map is reading the wrong
+        # axis entirely there, and cell-merging against it would corrupt an
+        # already-hard-won fix rather than improve it. Trust hybrid wholesale
+        # in every one of these cases, exactly as before this function existed.
+        return hybrid_map, None
+    if vlm_map == hybrid_map:
+        return hybrid_map, None  # exact agreement -- the strongest case, nothing to do
+
+    hybrid_keys, vlm_keys = set(hybrid_map), set(vlm_map)
+    sort_key = lambda s: int(s) if s.isdigit() else 0
+
+    if hybrid_keys != vlm_keys:
+        # Different COLUMN sets, not just different values on shared ones --
+        # a positional disagreement about which columns hold this row's
+        # data, not a "which digit is right" question. See this function's
+        # own docstring for why a same-call self-reported total can't safely
+        # arbitrate this shape. Always keep hybrid; still worth flagging the
+        # divergence so a reviewer can glance at the photo.
+        note = (f"model read this row under different sizes ({sorted(vlm_keys, key=sort_key)}) than "
+                f"pixel-OCR did ({sorted(hybrid_keys, key=sort_key)}) -- kept the OCR reading.")
+        return hybrid_map, {"status": "unverified", "sizes": sorted(hybrid_keys, key=sort_key), "note": note}
+
+    # Identical column set, differing value(s) on >=1 cell -- the
+    # "smoothed outlier" shape (rows 3/8/11/14 on sample 3-scanned.jpg,
+    # think=high: the VLM smooths a genuine outlier digit into the row's
+    # dominant value). No positional ambiguity here, so the printed total
+    # can safely arbitrate which source's digit is right.
+    conflicts = sorted((s for s in hybrid_keys if vlm_map[s] != hybrid_map[s]), key=sort_key)
+    diffs = "model and pixel-OCR disagree on size(s) " + "; ".join(
+        f"{s}: model={vlm_map[s]} vs OCR={hybrid_map[s]}" for s in conflicts
+    ) + "."
+    if printed_total is not None:
+        hybrid_sum, vlm_sum = sum(hybrid_map.values()), sum(vlm_map.values())
+        if hybrid_sum == printed_total and vlm_sum != printed_total:
+            return hybrid_map, {"status": "resolved", "sizes": conflicts, "note": f"{diffs} Kept pixel-grounded OCR (matches this row's own printed total)."}
+        if vlm_sum == printed_total and hybrid_sum != printed_total:
+            return vlm_map, {"status": "resolved", "sizes": conflicts, "note": f"{diffs} Kept the AI model's own reading (matches this row's own printed total)."}
+    return hybrid_map, {"status": "unresolved", "sizes": conflicts, "note": diffs}
+
+
+def _row_order_plausible(items: list[ExtractedItem]) -> bool:
+    """Looser stand-in for _validate_row_fracs, used only by
+    _hybrid_ocr_quantities's row-to-item matching below. There, row_top_frac/
+    row_bottom_frac are only ever used as a coarse top-to-bottom ORDERING
+    hint for the order-preserving DP that matches y-clustered OCR marks to
+    items -- never to crop pixels or define a strict containment range, the
+    way _validate_row_fracs's other caller (the recount row-crop builder,
+    which genuinely needs hard [0,1] bounds) uses them.
+
+    Confirmed necessary 2026-08-20: _validate_row_fracs hard-rejects the
+    WHOLE form the moment even one item's fraction is out of [0,1] range --
+    exactly what happened on sample 13-scanned.jpg (20 items), where the
+    model's row fractions are a mechanically uniform sequence (every item
+    exactly 0.03-0.04 tall, incrementing in lockstep from 0.38 to 1.03) that
+    overshoots 1.0 by 0.03 on the LAST item alone. That overshoot means the
+    fractions aren't genuine pixel measurements, but the sequence's ORDER is
+    still almost certainly right (a formulaic partition can't reorder
+    items) -- which is all this function's actual use of them requires.
+    Confirmed the strict gate was costing real accuracy, not just being
+    over-cautious: with the hybrid pass skipped, several of this form's real
+    rows read badly wrong from mistral's raw main-call reading alone (row 2
+    and row 5 both undercounted by more than half against the form's own
+    printed BOXES total) -- see CLAUDE.md."""
+    prev_center = -1.0
+    for it in items:
+        top, bottom = it.row_top_frac, it.row_bottom_frac
+        if bottom <= top:
+            # Degenerate (zero-height) item -- carries no ordering info to
+            # violate, so it can't actually break monotonic order; skipped
+            # rather than treated as a hard failure. Confirmed necessary
+            # 2026-08-22 on sample 3-scanned.jpg: the model reported
+            # row_top_frac == row_bottom_frac == 1.0 for the LAST two items
+            # (MM LOOPER 4289, NIVI KNOT RNBS), which used to veto the
+            # ENTIRE hybrid pass for all 20 rows before OCR even ran, even
+            # though the other 18 items' fractions were perfectly valid.
+            # _recover_degenerate_item_centers/_find_item_name_y further
+            # down already exist specifically to reconstruct a real
+            # position for exactly this case (see their own docstrings,
+            # 2026-08-21) -- but they never got a chance to run, since this
+            # gate rejected the whole image first.
+            continue
+        center = (top + bottom) / 2
+        if center < prev_center - 0.005:
+            return False
+        prev_center = center
+    return True
+
+
+def _find_item_name_y(item_name: str, texts: list[str], boxes: list[list[float]], scores: list[float],
+                       x_floor: float, y_floor_px: float) -> float | None:
+    """Searches the item-name column (x < x_floor) for OCR text that
+    CONTENT-matches this specific item's name -- a distinctive 3+-digit
+    numeric code (e.g. "4532") or a 3+-letter alpha word (e.g. "LOOPER"),
+    extracted from the name itself, not a fixed vocabulary. This is the
+    same "exact match on a known value" principle _hybrid_ocr_quantities
+    already uses for HEADER detection (columns) -- match on real, known
+    CONTENT, not a generic position guess -- just applied to item names
+    instead of header numbers. 2-letter/short tokens (e.g. "MM", a prefix
+    shared by several items in the same group on a real form) are
+    deliberately excluded so a non-distinguishing common prefix can't
+    produce an ambiguous match across several different rows.
+
+    Returns the y-center (in px) of the matched text, or None if no
+    distinctive token exists in the name, no match was found, or the
+    matches found are too spread out to trust (more than one real
+    row-height apart -- suggests an accidental/ambiguous match, e.g. the
+    same digit code appearing elsewhere on the page, rather than one real
+    row's own text)."""
+    alpha_words = {w.upper() for w in re.findall(r"[A-Za-z]{3,}", item_name)}
+    digit_codes = set(re.findall(r"\d{3,}", item_name))
+    if not alpha_words and not digit_codes:
+        return None
+
+    candidate_ys = []
+    for t, b, s in zip(texts, boxes, scores):
+        if s < 0.5 or (b[0] + b[2]) / 2 >= x_floor or b[1] <= y_floor_px:
+            continue
+        tt = t.upper()
+        if any(w in tt for w in alpha_words) or any(d in t for d in digit_codes):
+            candidate_ys.append((b[1] + b[3]) / 2)
+    if not candidate_ys:
+        return None
+    candidate_ys.sort()
+    if candidate_ys[-1] - candidate_ys[0] > 60.0:  # roughly a real form's own row height -- see below
+        return None  # scattered across more than one row's worth of height -- ambiguous, don't trust it
+    return sum(candidate_ys) / len(candidate_ys)
+
+
+def _recover_degenerate_item_centers(
+    centers: list[float], extracted: ExtractedForm,
+    texts: list[str], boxes: list[list[float]], scores: list[float],
+    x_floor: float, y_floor_px: float, height: int,
+) -> list[float]:
+    """Rescues item row-center fractions for items whose VLM-self-reported
+    row_top_frac/row_bottom_frac are DEGENERATE -- literally identical to a
+    sibling item's, giving the row-clustering zero positional signal to
+    differentiate them. Confirmed real and reproducible on
+    sample 3-scanned.jpg (two independent live runs, same signature both
+    times, 2026-08-21): mistral's main call reported the exact same
+    (0.98, 1.0) fraction for 4 consecutive items (MM K4532 through Nivi
+    Brick).
+
+    THREE designs were tried against this same real data before this one --
+    see CLAUDE.md's 2026-08-21 sections for the full writeups, kept here as
+    a short summary so a future change doesn't re-try any of them:
+    1. Matching OCR text-density clusters (position only, no content check)
+       to items via the same order-preserving DP used elsewhere in this
+       file. Failed because the bias wasn't confined to the exactly-tied
+       items -- the DP's GLOBAL joint cost-minimization "spent" a
+       degenerate item's real cluster satisfying a nearby, non-degenerate-
+       but-still-biased neighbor instead.
+    2. A single scalar offset between a naive equal-share (bottom-top)/n
+       uniform division and the model's own non-degenerate centers.
+       Confirmed NOT constant (grows with index) -- an early, narrow
+       calibration window just happened to look stable by coincidence.
+    3. The same equal-share idea reworked to WEIGHT each item by its own
+       real height instead of assuming identical 1/n slices (supporting
+       rows of different sizes, the same principle as the column-drift
+       fix). A real, partial improvement (2 of 4 degenerate rows became
+       correct or close), but still an ESTIMATE, not real evidence -- it
+       has no way to be more accurate than roughly "somewhere in the
+       neighborhood," because it never looks at the image again.
+
+    This version does what attempt 1 SHOULD have done: use real OCR
+    coordinates directly, the same way column drift is fixed elsewhere in
+    this file, by matching on CONTENT (a header's own exact string) rather
+    than raw position. Attempt 1 only used OCR text for generic position
+    CLUSTERING (gap-based grouping, no idea which cluster was which item),
+    which is why an order-preserving DP was needed at all -- and why it was
+    vulnerable to the DP donating a cluster to the wrong (nearby, biased)
+    item. This version instead searches, PER ITEM, for OCR text that
+    directly CONTAINS a distinctive piece of THAT item's own name (a
+    3+-digit code or 3+-letter word, via _find_item_name_y) -- no
+    competition between items, no clustering, no DP: either this specific
+    item's own name is found in the image or it isn't. Confirmed real and
+    unambiguous on this exact case: "MM K4532" -> the digit code "4532"
+    matches only one place on the page; "MM Looper 4289" -> "4289"; "Nivi
+    Brick RNBS" -> "NIVI" -- each resolves to the item's true row position
+    exactly (0.854, 0.883/n-a, 0.917, 0.950 as fractions -- matching this
+    file's own photo-verified ground truth for this group precisely,
+    confirmed via a real re-run, not assumed from the design alone).
+
+    Falls back to attempt 3's weighted-division ESTIMATE only for an item
+    whose name has no distinctive token to search for, or whose search
+    comes up empty/ambiguous -- strictly better than attempt 3 alone, since
+    real evidence is now used everywhere it's available and the estimate is
+    only relied on as a last resort, not as the primary mechanism.
+
+    2026-08-21, same day, later: content-matching is now tried for EVERY
+    item, not just ones that were part of an exact tie -- confirmed
+    necessary via a real re-run: a fresh live draw on the same form (main
+    calls are non-deterministic, per this file's own extensive history)
+    came back with items 16/17 (MM K4532 / MM K 3674) showing the SAME
+    "identical quantities" symptom as the original degenerate-collapse bug,
+    but this time with row_top_frac/row_bottom_frac that were DISTINCT
+    (0.89-0.92 vs 0.92-0.95) -- not tied, so the exact-tie gate correctly
+    did nothing, yet the underlying misattribution was the same. This
+    confirms what the offset-calibration investigation (attempt 2, above)
+    already found: the bias in this table's tail isn't limited to the
+    exactly-collapsed items, it's just usually not severe enough to
+    literally tie two items together. Only the WEIGHTED-DIVISION fallback
+    stays gated to degenerate items (it's an estimate with no real
+    evidence behind it, appropriate only as a last resort for a total
+    information loss) -- content-matching itself is real, verifiable
+    evidence regardless of whether the model's own fraction happened to
+    collide with a neighbor's or not, so restricting it to only the
+    collided case was leaving accuracy on the table for no safety reason."""
+    n = len(centers)
+    degenerate = [False] * n
+    for i in range(n - 1):
+        if abs(centers[i + 1] - centers[i]) < 1e-6:
+            degenerate[i] = degenerate[i + 1] = True
+
+    new_centers = list(centers)
+    still_degenerate = list(degenerate)
+    for k in range(n):
+        y = _find_item_name_y(extracted.items[k].item, texts, boxes, scores, x_floor, y_floor_px)
+        if y is not None:
+            new_centers[k] = y / height
+            still_degenerate[k] = False
+
+    if not any(still_degenerate):
+        return new_centers
+
+    top, bottom = extracted.table_top_frac, extracted.table_bottom_frac
+    if not any(still_degenerate) or not (0.0 <= top < bottom <= 1.0) or n == 0:
+        return new_centers
+
+    trusted_heights = sorted(
+        extracted.items[k].row_bottom_frac - extracted.items[k].row_top_frac
+        for k in range(n) if not degenerate[k] and extracted.items[k].row_bottom_frac > extracted.items[k].row_top_frac
+    )
+    if len(trusted_heights) < 3:
+        return new_centers
+    typical_height = trusted_heights[len(trusted_heights) // 2]  # median, robust to a couple of outlier rows
+
+    weights = [
+        (extracted.items[k].row_bottom_frac - extracted.items[k].row_top_frac)
+        if not degenerate[k] and extracted.items[k].row_bottom_frac > extracted.items[k].row_top_frac
+        else typical_height
+        for k in range(n)
+    ]
+    total_weight = sum(weights)
+    if total_weight <= 0:
+        return new_centers
+    scale = (bottom - top) / total_weight
+
+    cursor = top
+    for k in range(n):
+        span = weights[k] * scale
+        if still_degenerate[k]:
+            new_centers[k] = cursor + span / 2
+        cursor += span
+    return new_centers
+
+
+def _realign_row_clusters_by_total(
+    y_clusters: list[list[tuple[int, float, float]]],
+    item_centers: list[float],
+    items: list[ExtractedItem],
+) -> tuple[dict[int, int], set[int]]:
+    """Order-preserving assignment of OCR row-clusters (real, pixel-grounded
+    quantity marks -- one cluster per physically detected row) to items.
+    Same job as _monotonic_assign(cluster_ys, item_centers), and reduces to
+    exactly that when no printed totals are available, but additionally
+    prefers whichever valid assignment maximizes how many clusters' own
+    summed quantity matches the assigned item's own printed row_total,
+    using y-proximity only as a tiebreaker. Also deprioritizes (never
+    strictly excludes) VOIDABLE items -- see below -- from receiving a
+    cluster at all, so a row with no real data of its own can't cannibalize
+    a real neighbor's.
+
+    Why plain y-proximity isn't enough: confirmed directly on
+    sample 3-scanned.jpg (2026-09-01 row-bleed diagnosis -- see CLAUDE.md)
+    that when even ONE physical row's marks go completely undetected by OCR
+    (too faint, or a cramped stacked letter-over-digit cell like MM K4532's
+    own row), _monotonic_assign has no way to know a cluster is MISSING --
+    it just gives every subsequent item the next row's cluster instead,
+    cascading an off-by-one substitution through most of the table.
+    item_centers can't rescue this either: they're frequently a formulaic,
+    evenly-spaced guess rather than a real per-row measurement (see
+    _row_order_plausible's docstring), so they don't reliably tell the DP
+    WHERE the gap is -- confirmed on the same run that even
+    _recover_degenerate_item_centers's own content-matching (a real,
+    independent signal) doesn't always land for every item (e.g. "MM
+    K4532"'s own distinctive code, "4532", didn't resolve this run), so a
+    second, independent signal is worth having rather than relying on that
+    alone.
+
+    The row's own printed running total is that second signal: confirmed
+    on the same real run that it stays correctly read for its OWN row even
+    when the quantities read for that row are actually the next row's data
+    -- i.e. the main call loses track of which row's DIGITS it's reading
+    well before it loses track of which row's TOTAL it's reading. Distance
+    stays the tiebreaker (not thrown away) for the common case where no
+    printed total disambiguates -- including every row whose total is
+    blank/illegible, where this is identical to _monotonic_assign.
+
+    Deliberately NOT the already-disproven "shift a row's values under
+    different header KEYS to match its total" idea (see
+    _flag_hybrid_total_mismatch's docstring) -- relabeling can't change a
+    row's sum, since the values are unchanged. This instead chooses WHICH
+    CLUSTER of real marks -- a genuinely different multiset of values, with
+    a genuinely different sum -- gets assigned to an item in the first
+    place, which total-matching can actually detect and correct.
+
+    VOIDABLE ITEMS -- confirmed necessary 2026-09-01, a DIFFERENT bug from
+    the one above, found by the user directly on the same form:
+    sample 3-scanned.jpg's "Super Boy 3/4" row is struck through top to
+    bottom in the photo -- no real marks anywhere in it -- and its own
+    row_total is blank (the only blank total on this 20-row form). This
+    total-matching fix alone doesn't help a row like that at all: with no
+    total to check against, it competes for a cluster on pure y-distance
+    exactly like _monotonic_assign always did, and happily absorbs a real
+    neighbor's marks. An item is treated as voidable when its own row_total
+    doesn't parse to a number AND fewer than half the table's rows are in
+    that same state -- the second condition matters because a blank total
+    is completely normal on some form layouts (this only means something
+    when it's the rare exception, not the rule for this specific form).
+    Voidable items are deprioritized, not excluded outright -- if every
+    non-voidable item is already satisfied and a real cluster is still
+    left over, a voidable item can still receive one (a blank total isn't
+    proof of a void row, just a proxy for it), but never at a non-voidable
+    item's expense. The caller uses the returned voidable set to force
+    genuinely-unmatched voidable items to explicit empty quantities rather
+    than falling back to the main call's own (frequently also-wrong) guess
+    for that row.
+
+    Standard three-key (match_count, -voidable_assigned_count,
+    -total_distance) lexicographic DP, O(len(y_clusters) *
+    len(item_centers)) -- both are ~20 for every form in this project's
+    test set, so this is cheap. Every cluster is assigned (same contract as
+    _monotonic_assign); the caller is already guaranteed len(y_clusters) <=
+    len(item_centers)."""
+    cluster_sums = [sum(q for q, _x, _y in cluster) for cluster in y_clusters]
+    cluster_ys = [sum(c[2] for c in cluster) / len(cluster) for cluster in y_clusters]
+    item_totals = [_parse_int_or_none(it.row_total) for it in items]
+
+    n = len(item_centers)
+    blank_total_indices = {j for j, t in enumerate(item_totals) if t is None}
+    voidable = blank_total_indices if len(blank_total_indices) < n * 0.5 else set()
+
+    m = len(cluster_ys)
+    NEG = (-1, -(m + 1), float("-inf"))
+    # dp[i][j]: best (match_count, -voidable_assigned_count, -total_distance)
+    # assigning clusters[0:i] using only items[0:j] (order-preserving, i.e.
+    # cluster i-1 if placed must land on some item < j). dp[0][*] =
+    # (0, 0, 0.0) -- no clusters placed yet is always trivially achievable.
+    dp: list[list[tuple[int, int, float]]] = [[(0, 0, 0.0)] * (n + 1) for _ in range(m + 1)]
+    for i in range(1, m + 1):
+        dp[i][0] = NEG  # a cluster with zero items available to hold it
+        for j in range(1, n + 1):
+            skip = dp[i][j - 1]  # item j-1 holds nothing
+            take = NEG
+            if dp[i - 1][j - 1] != NEG:
+                match = 1 if item_totals[j - 1] is not None and cluster_sums[i - 1] == item_totals[j - 1] else 0
+                voided = 1 if (j - 1) in voidable else 0
+                dist = abs(cluster_ys[i - 1] - item_centers[j - 1])
+                prev_count, prev_void, prev_neg_dist = dp[i - 1][j - 1]
+                take = (prev_count + match, prev_void - voided, prev_neg_dist - dist)  # cluster i-1 -> item j-1
+            dp[i][j] = max(skip, take)
+
+    assignment: dict[int, int] = {}
+    i, j = m, n
+    while i > 0:
+        if j > 0 and dp[i][j] == dp[i][j - 1]:
+            j -= 1
+            continue
+        assignment[i - 1] = j - 1
+        i -= 1
+        j -= 1
+    return assignment, voidable
+
+
+STANDARD_LETTER_SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL"]
+
+
+def _recover_letter_size_row_digits(
+    original_bytes: bytes, header_xs: list[float], anchor_label_y: float,
+    spacing: float, width: int, height: int, band_height: float, upscale: int = 8,
+) -> dict[float, int]:
+    """Per-COLUMN targeted, upscaled re-OCR of ONE row's stacked letter-size
+    cells -- used only for a row mistral has directly flagged
+    (MistralExtractedItem.letter_sizes) as using letter clothing sizes
+    instead of the printed numeric grid.
+
+    Root cause this exists for, confirmed via direct inspection of
+    sample 3-scanned.jpg's MM K4532 row: the handwritten letter label and its
+    own quantity digit are stacked so tightly (a cramped two-line cell, no
+    ruled line between them) that PaddleOCR's whole-page detection pass
+    sometimes merges both lines into ONE box, and the recognizer reads the
+    merged crop as garbage ('#6', 'y', '2') instead of two legible
+    characters -- confirmed for 3 of this row's 5 columns (headers 45/50/55),
+    while the other 2 (60/65, whose lines happened to have enough visual gap)
+    were detected as two clean separate boxes each ("XL"/"6", "xxC"/"6").
+
+    TWO prior designs were tried and failed before this one, both real
+    attempts confirmed via saved crop images, not assumed:
+    1. One wide crop spanning every header column at once (mirroring the
+       shape of the row itself) -- failed outright regardless of height
+       tried (34px, 55px, 73px): PaddleOCR's detector returned ONE giant box
+       spanning almost the whole strip, and recognition on that box came back
+       either garbage ('6666', one blob) or completely empty (score 0.0) --
+       too much heterogeneous content (5 separate label+digit cells, mostly
+       blank paper past the group) for the detector to segment correctly.
+    2. A narrow per-column crop bounded to just the label+digit cell's own
+       known height -- still failed on several columns: a ruled horizontal
+       line (the row's own bottom boundary) frequently cuts straight through
+       the handwritten digit at that fixed vertical position, confirmed by
+       saving and visually inspecting the crop directly.
+
+    This version crops ONLY the digit's own sub-line (skips the label line
+    entirely -- this function never tries to read the letter text itself,
+    see below) in a NARROW single-column band, then sweeps a small range of
+    vertical offsets and takes the highest-scoring literal digit found
+    anywhere in the sweep -- confirmed via direct testing this reliably
+    dodges the ruled-line-through-the-digit problem, since at least one
+    offset in the sweep always lands the digit cleanly between ruled lines.
+    Deliberately requires t.isdigit() exactly (no _try_digit_correct
+    letter-lookalike fallback, unlike the whole-page pass) -- confirmed
+    necessary: a stray 'L' character (bleeding in from a neighboring cell at
+    one offset) scored 0.93 and would have been "corrected" to the digit 1
+    by that fallback, a real wrong-value risk this search's much larger
+    number of attempts (multiple offsets x multiple columns) makes more
+    likely to hit than the whole-page pass's single attempt per token ever
+    was.
+
+    Deliberately does NOT try to re-read the LETTER text itself -- recognizing
+    S/M/L/XL/XXL reliably in a cramped handwritten cell is a strictly harder
+    problem than recovering a single quantity digit at an already-known
+    x-position (this form's own printed numeric headers give exact, reliable
+    column anchors to crop and search around, whether or not this row
+    actually uses their numeric MEANING). The caller maps each recovered
+    column to a letter by ORDINAL (left-to-right) position relative to
+    whichever letters the whole-page pass DID manage to read cleanly (e.g.
+    "XL"/"XXL" here) -- see _infer_letter_columns.
+
+    Returns {header_x_position: quantity} for every column where a confident
+    digit was found -- the caller is responsible for merging this with
+    whatever the whole-page pass already found and mapping to letters."""
+    image = Image.open(io.BytesIO(original_bytes)).convert("RGB")
+    ocr = get_ocr()
+    recovered: dict[float, int] = {}
+    for hx in header_xs:
+        left_px = max(0, int(hx - spacing * 0.5))
+        right_px = min(width, int(hx + spacing * 0.5))
+        if right_px - left_px < 10:
+            continue
+        best: tuple[str, float] | None = None
+        # Sweep vertical offsets covering roughly one row's worth of
+        # displacement below the label line -- confirmed via direct testing
+        # to be the range needed to dodge the ruled line at whichever exact
+        # position it happens to cross a given column's digit (varies per
+        # column on this real form, not a fixed offset).
+        for dy in range(-16, 26, 2):
+            top_px = max(0, int(anchor_label_y + band_height * 0.35 + dy))
+            bottom_px = min(height, int(anchor_label_y + band_height * 1.55 + dy))
+            if bottom_px - top_px < 6:
+                continue
+            crop = image.crop((left_px, top_px, right_px, bottom_px))
+            crop = crop.resize((crop.width * upscale, crop.height * upscale), Image.LANCZOS)
+            arr = np.array(crop)[:, :, ::-1]
+            result = list(ocr.predict(arr))
+            if not result:
+                continue
+            for t, s in zip(result[0]["rec_texts"], result[0]["rec_scores"]):
+                if s < 0.85 or not t.isdigit():
+                    continue
+                if best is None or s > best[1]:
+                    best = (t, s)
+        if best is not None:
+            qty = int(best[0])
+            if 0 < qty <= 500:
+                recovered[hx] = qty
+    return recovered
+
+
+def _infer_letter_columns(group_header_xs: list[float], known: dict[str, float], tolerance: float) -> dict[str, float] | None:
+    """Given the sorted x-positions of every header column a letter-size
+    group spans and at least one CONFIRMED letter->x anchor (from real OCR
+    text, e.g. "XL" read cleanly at one column), infers the letter for
+    EVERY column in the group by ordinal (left-to-right) offset from
+    STANDARD_LETTER_SIZE_ORDER -- deliberately does not guess a starting
+    letter with zero anchor, and refuses (returns None) if multiple anchors
+    disagree on the offset, or if the inferred range would run off either
+    end of the standard list. Confirmed real via direct OCR + pixel
+    measurement on sample 3-scanned.jpg: MM K4532's 5 columns, anchored by
+    a cleanly-read "XL" at the 4th (of 5) column, infer to
+    S/M/L/XL/XXL -- exactly the label sequence confirmed present in the
+    photo."""
+    if not known:
+        return None
+    group_sorted = sorted(group_header_xs)
+    anchors = []
+    for letter, x in known.items():
+        if letter not in STANDARD_LETTER_SIZE_ORDER:
+            continue
+        pos = min(range(len(group_sorted)), key=lambda i: abs(group_sorted[i] - x))
+        if abs(group_sorted[pos] - x) > tolerance:
+            continue
+        anchors.append((pos, STANDARD_LETTER_SIZE_ORDER.index(letter)))
+    if not anchors:
+        return None
+    col_pos, order_idx = anchors[0]
+    offset = order_idx - col_pos
+    if offset < 0 or offset + len(group_sorted) > len(STANDARD_LETTER_SIZE_ORDER):
+        return None
+    for col_pos2, order_idx2 in anchors[1:]:
+        if order_idx2 - col_pos2 != offset:
+            return None  # anchors disagree -- don't trust this group
+    return {STANDARD_LETTER_SIZE_ORDER[offset + i]: x for i, x in enumerate(group_sorted)}
+
+
+def _hybrid_ocr_quantities(image_path: Path, extracted: ExtractedForm, outdir: Path | None = None, letter_size_hints: set[int] = frozenset()) -> tuple[dict[int, dict[str, int]], dict[int, dict]]:
+    """Reads quantities from REAL OCR-measured coordinates for headers and
+    quantity marks, then groups each mark with its nearest header by
+    x-position -- a single OCR pass on the whole image (no per-row crops, no
+    grid.py row-boundary detection), so this sidesteps both root causes
+    behind the 2026-08-17 --cv-quantities revert (PaddleOCR's inconsistent
+    internal resize on stitched crops; grid.py's row-boundary detection
+    getting confused by an extra letterhead row).
+
+    2026-08-20: the mark-to-header grouping itself is now done by CODE
+    (order-preserving DP, _monotonic_assign), not by asking mistral to
+    reproduce the arithmetic in a text reply -- no model call happens in
+    this function at all any more. See the grouping code below for why:
+    a real run found the VLM silently dropping a correctly-detected mark
+    from its own reply despite being handed exact coordinates for
+    everything. The historical note below (isolated-test accuracy of the
+    VLM-grouping approach) is kept for context on why this function exists
+    in this shape, not as a description of current behavior.
 
     THE CORE MECHANISM IS CONFIRMED STRONG IN ISOLATION, NOT YET AT THE
     SAME LEVEL END-TO-END -- be precise about which claim is which. In a
@@ -1011,17 +1747,33 @@ def _hybrid_ocr_quantities(client: ollama.Client, model: str, image_path: Path, 
     still fell short of the isolated test's number -- not yet root-caused,
     see CLAUDE.md.
 
-    Returns (quantities_by_index, notes). Only rows where OCR found
-    candidate marks AND the model's response parsed cleanly are included;
-    every other row keeps the model's own main-call reading, same
-    fallback philosophy as this file's other optional passes."""
+    Returns (quantities_by_index, flags). flags is aligned by item index,
+    same {"status", "sizes", "note"} shape as extract_claude.py's own
+    recount flags (see _apply_recount) -- 2026-08-22: this function used to
+    return a flat list of bookkeeping/diagnostic strings appended straight
+    into extracted.notes, which just piled up as an unstructured wall of
+    text at the top of the review page (nothing pointed at which cell was
+    actually suspect). Whole-pipeline skip/failure reasons below are now
+    printed to the console instead (operationally useful, not something a
+    reviewer checking cells against a photo needs to read); only a genuine
+    per-row signal (the total-checksum mismatch) becomes a flag, so it
+    renders as a highlighted cell via generate_review.py's existing
+    recount-flag mechanism instead of prose. Rows where OCR found candidate
+    marks AND the code-side header assignment was confident (avg distance
+    under ASSIGN_COST_LIMIT) are included in quantities_by_index; every
+    other row keeps the model's own main-call reading, same fallback
+    philosophy as this file's other optional passes -- EXCEPT a voidable
+    row (see _realign_row_clusters_by_total's own docstring) that ended up
+    with no cluster, which is included as an explicit empty dict instead of
+    falling back, since that fallback is exactly what was showing
+    fabricated quantities for a struck-through row in the first place."""
     size_headers = extracted.size_headers
     n_items = len(extracted.items)
     if n_items == 0 or not size_headers:
-        return {}, []
-    if not _validate_row_fracs(extracted.items, extracted.table_top_frac, extracted.table_bottom_frac):
-        return {}, ["Hybrid OCR+VLM quantity read: skipped -- row_top_frac/row_bottom_frac from the "
-                     "main read didn't form a plausible partition."]
+        return {}, {}
+    if not _row_order_plausible(extracted.items):
+        print("  hybrid OCR quantity read: skipped -- row_top_frac/row_bottom_frac from the main read wasn't even monotonically ordered top-to-bottom.")
+        return {}, {}
 
     original_bytes = _exif_corrected_bytes(image_path)
     image = Image.open(io.BytesIO(original_bytes)).convert("RGB")
@@ -1030,7 +1782,8 @@ def _hybrid_ocr_quantities(client: ollama.Client, model: str, image_path: Path, 
     ocr = get_ocr()
     result = list(ocr.predict(arr))
     if not result:
-        return {}, ["Hybrid OCR+VLM quantity read: OCR found no text at all on this image."]
+        print("  hybrid OCR+VLM quantity read: OCR found no text at all on this image.")
+        return {}, {}
     res = result[0]
     texts, boxes, scores = res["rec_texts"], res["rec_boxes"].tolist(), res["rec_scores"]
 
@@ -1069,8 +1822,8 @@ def _hybrid_ocr_quantities(client: ollama.Client, model: str, image_path: Path, 
                     header_y_min = min(header_y_min, b[1])
 
     if len(header_x) < len(size_headers) * 0.6:
-        return {}, [f"Hybrid OCR+VLM quantity read: only found {len(header_x)}/{len(size_headers)} "
-                     f"headers via OCR -- skipped (likely a free-form page with no shared header row)."]
+        print(f"  hybrid OCR+VLM quantity read: only found {len(header_x)}/{len(size_headers)} headers via OCR -- skipped (likely a free-form page with no shared header row).")
+        return {}, {}
 
     header_xs_sorted = sorted(header_x.values())
     spacing = (header_xs_sorted[-1] - header_xs_sorted[0]) / max(len(header_xs_sorted) - 1, 1)
@@ -1102,24 +1855,67 @@ def _hybrid_ocr_quantities(client: ollama.Client, model: str, image_path: Path, 
     # sub-header line (this form has two stacked on top of each other) and
     # the floor is pushed past it, repeating until a low-coverage (real)
     # band is found or the search window is exhausted.
+    # Restricted to the header/quantity column x-range (x_floor..x_ceiling) --
+    # confirmed necessary 2026-09-02 on sample 3-scanned.jpg: an unrelated,
+    # tall OCR box from the Style/Particulars column (x well left of
+    # x_floor, e.g. a garbled partial read of that row's own style text,
+    # "ens" at x=251) landed inside this y-window and its bottom edge alone
+    # inflated the computed band_bottom (a fake "ens" box reaching y=382,
+    # deeper than the real decoy header row's own bottom of ~364) --
+    # pushing y_floor_px 18px past where item 0's real quantity marks
+    # actually start (y=365), so every one of that row's marks (whose box
+    # TOPS sat just below the true decoy row but above this inflated floor)
+    # got excluded from candidates entirely, and the row fell back to the
+    # main call's own wrong reading (column-shifted AND missing 2 values).
+    # The "covered" count already implicitly ignored text outside header
+    # range (no header sits near x=251, so it never counted toward
+    # coverage), but the bottoms computation had no such filter -- unifying
+    # both to the same x-range closes that gap.
     def _band_header_coverage(y_lo: float, y_hi: float) -> tuple[int, float]:
-        xs_in_band = [(b[0] + b[2]) / 2 for _t, b, sc in zip(texts, boxes, scores) if sc >= 0.5 and y_lo < (b[1] + b[3]) / 2 <= y_hi]
-        if not xs_in_band:
+        in_band = [b for _t, b, sc in zip(texts, boxes, scores)
+                   if sc >= 0.5 and y_lo < (b[1] + b[3]) / 2 <= y_hi and x_floor <= (b[0] + b[2]) / 2 <= x_ceiling]
+        if not in_band:
             return 0, y_hi
+        xs_in_band = [(b[0] + b[2]) / 2 for b in in_band]
         covered = sum(1 for hx in header_xs_sorted if any(abs(hx - x) <= spacing * 0.4 for x in xs_in_band))
-        return covered, max(b[3] for _t, b, sc in zip(texts, boxes, scores) if sc >= 0.5 and y_lo < (b[1] + b[3]) / 2 <= y_hi)
+        return covered, max(b[3] for b in in_band)
 
+    # Coverage threshold raised from 0.5 to 0.85, 2026-09-02 -- confirmed
+    # necessary once the x-range fix above stopped an unrelated Style-column
+    # token from artificially inflating band_bottom: with that contamination
+    # gone, sample 3-scanned.jpg's item 0 (a genuinely WIDE real row, 8 of
+    # 13 header columns = 62% coverage) started tripping this SAME >=50%
+    # test on its own -- pushed past not once but three times (0.62, 0.62,
+    # 0.62 across the range(3) cap), landing y_floor_px 90+px past its own
+    # real data. A real printed decoy sub-header row (this form's own
+    # "18/20/22.../42" line, and every other decoy row confirmed elsewhere
+    # in this file) is a full-width table LABEL row by construction --
+    # measured directly across all 4 of this project's core regression
+    # forms, every confirmed genuine decoy row showed 1.00 (complete)
+    # coverage, while sample 3's false-positive wide DATA row topped out at
+    # 0.62 -- a wide, comfortable gap. 0.85 sits safely between the two,
+    # confirmed via that same real measurement, not chosen blind.
     y_floor_px = header_y_max
     band_height = max(header_y_max - min(b[1] for t, b, s in zip(texts, boxes, scores) if t in header_x), 15.0)
     for _ in range(3):  # at most 3 stacked decoy sub-header lines
         covered, band_bottom = _band_header_coverage(y_floor_px, y_floor_px + band_height * 1.3)
-        if covered < len(header_xs_sorted) * 0.5:
+        if covered < len(header_xs_sorted) * 0.85:
             break
         y_floor_px = band_bottom
 
     candidates: list[tuple[int, float, float]] = []  # (qty, x_center, y_frac)
     for t, b, s in zip(texts, boxes, scores):
-        if b[1] <= y_floor_px or s < 0.5:
+        # Center, not box TOP, against y_floor_px -- confirmed necessary
+        # 2026-09-02 on sample 3-scanned.jpg: a real quantity mark's own box
+        # top can land exactly ON y_floor_px when a row starts immediately
+        # after the decoy row with no visual gap (a tall handwritten-digit
+        # box straddling that boundary), silently dropping the one mark
+        # whose top happened to tie the floor (box [646,364,674,393] vs.
+        # y_floor_px=364 -- excluded by a strict "<=" even though its
+        # center, 378.5, is comfortably inside the real data row). Using the
+        # center matches how every other position check in this function
+        # already treats a box (decoy-band coverage, y_frac, row-clustering).
+        if (b[1] + b[3]) / 2 <= y_floor_px or s < 0.5:
             continue
         xc = (b[0] + b[2]) / 2
         if not (x_floor <= xc <= x_ceiling):
@@ -1145,8 +1941,231 @@ def _hybrid_ocr_quantities(client: ollama.Client, model: str, image_path: Path, 
             continue
         candidates.append((qty, xc, (b[1] + b[3]) / 2 / height))
 
+    # Supplementary low-confidence recovery pass, 2026-08-20 -- a SEPARATE
+    # OCR call on a CLAHE-contrast-boosted copy of the image, used ONLY to
+    # add extra low-score digit candidates the primary (score>=0.5) pass
+    # above missed, never to replace or recompute anything from the primary
+    # pass itself. Confirmed necessary this way, not by CLAHE-ing the
+    # primary pass directly: an earlier version ran the ENTIRE detection
+    # (headers, y_floor_px, primary candidates) against the CLAHE image, and
+    # CLAHE's contrast change shifted PaddleOCR's own detected box
+    # boundaries by ~2px -- enough to push the computed y_floor_px onto the
+    # very first data row's own marks and silently drop that row's cluster
+    # entirely (confirmed via a real re-run: row 0 lost all 4 of its
+    # candidates, not just the one this pass was meant to recover). Keeping
+    # the primary pass on the unmodified image means header_x/y_floor_px
+    # stay exactly as already validated; this pass only adds evidence, and
+    # only within that already-established, stable window.
+    #
+    # Dash/blank marks on this form are sometimes read by PaddleOCR as the
+    # CJK character for "one" ('一', a single horizontal stroke visually
+    # close to a handwritten dash) instead of a literal "-", and -- since
+    # that's a genuine ambiguity in the mark's shape, not a CLAHE artifact --
+    # confirmed present on the UNMODIFIED image too: the same physical dash,
+    # in the same column, reads as '一' at usable confidence (0.97, 0.60,
+    # 0.43) on three rows, but as a spurious DIGIT-shaped misread ('2' at
+    # 0.33) on a fourth. Excluding any low-score digit candidate that shares
+    # a column with an independently-detected '一'/'-' elsewhere on this
+    # form (computed from the PRIMARY pass, same stable coordinate space as
+    # y_floor_px) stops that misread from being recovered as a fake
+    # quantity by the lowered floor below.
+    dash_xs = [(b[0] + b[2]) / 2 for t, b, s in zip(texts, boxes, scores)
+               if b[1] > y_floor_px and s >= 0.3 and t in ("一", "-")]
+
+    LOW_SCORE_FLOOR = 0.2
+    try:
+        clahe_bytes = preprocess_for_vlm(original_bytes)
+        clahe_image = Image.open(io.BytesIO(clahe_bytes)).convert("RGB")
+        clahe_arr = np.array(clahe_image)[:, :, ::-1]
+        clahe_result = list(ocr.predict(clahe_arr))
+    except Exception:
+        clahe_result = []
+    if clahe_result:
+        cres = clahe_result[0]
+        for t, b, s in zip(cres["rec_texts"], cres["rec_boxes"].tolist(), cres["rec_scores"]):
+            if not (LOW_SCORE_FLOOR <= s < 0.5 and t.isdigit()):
+                continue
+            if b[1] <= y_floor_px:
+                continue
+            xc = (b[0] + b[2]) / 2
+            if not (x_floor <= xc <= x_ceiling):
+                continue
+            if any(abs(xc - dx) <= spacing * 0.4 for dx in dash_xs):
+                continue
+            yc = (b[1] + b[3]) / 2
+            # Skip if this is very likely the SAME physical mark the primary
+            # pass already found (possibly at a different score/box) --
+            # only meant to add marks the primary pass missed entirely.
+            if any(abs(xc - cx) <= 15 and abs(yc - cy * height) <= 15 for _q, cx, cy in candidates):
+                continue
+            qty = int(t)
+            if qty <= 0 or qty > 500:
+                continue
+            candidates.append((qty, xc, yc / height))
+
+    # Duplicate-header-label exclusion, 2026-08-20 -- confirmed necessary on
+    # sample 5-scanned.jpg: Fairlady Print's handwritten "105" size-label
+    # (written above its own quantity, for the unprinted-extra-column
+    # override documented elsewhere in this file) got detected as its OWN
+    # candidate quantity mark, sitting almost exactly at the "105" header's
+    # own x-position (1px off, in the confirmed case), corrupting Image
+    # FCD's row with a spurious {"105": 105} cell. Only excludes a candidate
+    # when BOTH its value equals some header's own number AND it sits
+    # tightly at that SAME header's own x -- a normal quantity (a small
+    # count near some column) never matches on value, so this can't misfire
+    # on real data; the rare case of a genuine quantity coincidentally equal
+    # to its own column's header number gets dropped rather than kept,
+    # matching this project's established "leave it out rather than risk a
+    # wrong value" default.
+    DUP_LABEL_TOLERANCE_PX = 15.0
+    candidates = [c for c in candidates
+                  if not (str(c[0]) in header_x and abs(c[1] - header_x[str(c[0])]) <= DUP_LABEL_TOLERANCE_PX)]
+
+    # Recognize a genuinely NEW, unprinted overflow column (e.g. "110" on
+    # sample 5.jpeg's Fairlady rows -- a real, DB-confirmed valid size for
+    # this business's products, past this form's own last printed header)
+    # from its stacked label-over-quantity SHAPE, not by asking any model to
+    # notice it. The same idea (known_numeric_sizes(), the business's real
+    # catalog size vocabulary) was already tried as VLM PROMPT grounding
+    # three separate ways in the 2026-08-13/17 sessions and failed
+    # identically every time -- mistral never once reported a value past
+    # the printed header even with the real catalog list spelled out (see
+    # CLAUDE.md's "settled vision-attention ceiling" verdict). But mistral
+    # isn't involved in reading these tokens in the hybrid pipeline at all
+    # -- PaddleOCR already detects both the label and quantity text
+    # correctly (confirmed directly on this same form's "105" case above)
+    # -- so this is a code-side pattern match, not the vision problem that
+    # kept failing.
+    #
+    # Deliberately narrow, per the lesson from the SAME DAY's adaptive-
+    # threshold regression (a fix tuned to one form's failure broke a
+    # different form): only scans the small margin PAST x_ceiling (which
+    # normally excludes the trailing Total/Rate column entirely), and only
+    # accepts a token there when a SECOND token stacks directly below it at
+    # nearly the same x -- a lone Total/Rate number has no such stacked
+    # companion, so this can't misfire on that column into treating a
+    # circled total as a new size header.
+    # Computed here (earlier than its other use further below, for row-
+    # clustering) so the overflow-column density guard just below can use it
+    # too -- a plain row-index -> expected-y-center lookup, doesn't depend on
+    # anything computed in between.
+    item_centers = [(it.row_top_frac + it.row_bottom_frac) / 2 for it in extracted.items]
+    item_centers = _recover_degenerate_item_centers(
+        item_centers, extracted, texts, boxes, scores, x_floor, y_floor_px, height
+    )
+
+    try:
+        known_sizes = set(brandlist_match.known_numeric_sizes())
+    except Exception:
+        known_sizes = set()
+    if known_sizes:
+        overflow_margin_px = spacing * 1.2
+        new_overflow_headers: dict[str, tuple[float, float]] = {}  # label_val -> (xc, label_box_bottom)
+        for t, b, s in zip(texts, boxes, scores):
+            if s < 0.5 or not t.isdigit() or t in header_x or b[1] <= y_floor_px:
+                continue
+            xc = (b[0] + b[2]) / 2
+            if not (x_ceiling < xc <= x_ceiling + overflow_margin_px):
+                continue
+            label_val = int(t)
+            if label_val not in known_sizes:
+                continue
+            yc = (b[1] + b[3]) / 2
+            companion = next(
+                ((t2, b2) for t2, b2, s2 in zip(texts, boxes, scores)
+                 if s2 >= 0.5 and t2.isdigit()
+                 and abs((b2[0] + b2[2]) / 2 - xc) <= spacing * 0.3
+                 and 0 < (b2[1] + b2[3]) / 2 - yc <= band_height * 1.5),
+                None,
+            )
+            if companion is None:
+                continue
+
+            # Reject a column that looks like a densely-populated PRINTED
+            # per-row column (e.g. a "Total Dozen"/"Grand Total" tally
+            # sitting just past the last real size header) rather than a
+            # rare handwritten override label -- confirmed necessary
+            # 2026-08-21 on sample 3-scanned.jpg: several per-row printed
+            # total VALUES (30, 35, ...) individually happen to be valid
+            # known_numeric_sizes() members AND sit close enough together
+            # (same column region, one per row) to also satisfy the
+            # label+companion shape above, corrupting header detection with
+            # fake "35"/"30" size columns -- which then merged 5 unrelated
+            # rows' candidates into one cluster (too many marks for any real
+            # row) and silently dropped them all. A genuine handwritten
+            # override label (confirmed on sample 5.jpeg's "110") is written
+            # ONCE and only ever has detections on the few rows that
+            # actually share it. Reuses the exact same "sparse real data vs.
+            # dense printed row" signal already used for decoy-sub-header-
+            # row detection above, just applied along the other axis: count
+            # how many of the table's OWN rows (via item_centers, tolerant
+            # of this column's natural position drift, not a tight pixel
+            # window) have ANY digit nearby this x -- a real printed column
+            # hits most rows, a rare override hits only the few sharing it.
+            rows_with_nearby_digit = sum(
+                1 for ic in item_centers
+                if any(s3 >= 0.5 and t3.isdigit()
+                       and abs((b3[1] + b3[3]) / 2 - ic * height) <= band_height
+                       and abs((b3[0] + b3[2]) / 2 - xc) <= spacing
+                       for t3, b3, s3 in zip(texts, boxes, scores))
+            )
+            if item_centers and rows_with_nearby_digit > len(item_centers) * 0.5:
+                continue
+
+            t2, b2 = companion
+            qty2 = int(t2)
+            if qty2 <= 0 or qty2 > 500:
+                continue
+            xc2 = (b2[0] + b2[2]) / 2
+            yc2 = (b2[1] + b2[3]) / 2
+            header_x[str(label_val)] = xc
+            new_overflow_headers[str(label_val)] = (xc, b[3])
+            candidates.append((qty2, xc2, yc2 / height))
+
+        # A handwritten overflow-column label is often written ONCE and
+        # implicitly shared by every row below it, not re-written per row --
+        # confirmed directly on sample 5-scanned.jpg: Fairlady Print and
+        # Fairlady Plain sit in consecutive rows sharing a single "105"/"110"
+        # label pair written only above Fairlady Print (the first of the
+        # two); Fairlady Plain has its own quantity in that same column but
+        # no label of its own, so the label+immediate-companion scan above
+        # only ever recovers ONE row's value per overflow column, silently
+        # missing every other row that shares it (this is also the user's
+        # own suspicion about sample 3.jpeg's last 4 rows sharing one label
+        # above the first of the four -- the same pattern, not yet tested
+        # there). Once a new overflow column's x-position is confirmed, treat
+        # it like any other known header column for the REST of the table:
+        # scan the same narrow x-band, across every row below y_floor_px, for
+        # additional digit-shaped candidates the label-adjacency check above
+        # can't reach because they have no label of their own. Deliberately
+        # tight x-tolerance (spacing*0.3, same as the label-companion match
+        # above) so this can't sweep in an unrelated column's marks.
+        for label_val, (xc, label_bottom) in new_overflow_headers.items():
+            for t, b, s in zip(texts, boxes, scores):
+                # Strictly below the LABEL's own box (not just y_floor_px,
+                # the printed header row's bottom) -- otherwise this scan
+                # re-detects the overflow label token itself (e.g. "110",
+                # itself a plausible-looking small quantity, <=500) as a
+                # spurious candidate. Confirmed necessary: an earlier version
+                # using only the y_floor_px bound double-counted the label as
+                # a quantity in Fairlady Print's own row before this guard
+                # was added.
+                if s < 0.5 or b[1] <= label_bottom:
+                    continue
+                xc2 = (b[0] + b[2]) / 2
+                if abs(xc2 - xc) > spacing * 0.3:
+                    continue
+                qty = int(t) if t.isdigit() else _try_digit_correct(t)
+                if qty is None or qty <= 0 or qty > 500:
+                    continue
+                yc2 = (b[1] + b[3]) / 2
+                if any(abs(xc2 - cx) <= 15 and abs(yc2 - cy * height) <= 15 for _q, cx, cy in candidates):
+                    continue
+                candidates.append((qty, xc2, yc2 / height))
+
     if not candidates:
-        return {}, ["Hybrid OCR+VLM quantity read: OCR found no quantity-shaped marks in the table area."]
+        print("  hybrid OCR+VLM quantity read: OCR found no quantity-shaped marks in the table area.")
+        return {}, {}
 
     # Cluster candidates into rows by y-GAP (data-driven), then match each
     # cluster to its nearest item by row_top_frac/row_bottom_frac midpoint
@@ -1160,39 +2179,83 @@ def _hybrid_ocr_quantities(client: ollama.Client, model: str, image_path: Path, 
     # too, not just row-crop building. Using the fractions only as a
     # coarse "which item is this cluster nearest to" comparison (not a
     # strict boundary test) is far more tolerant of that kind of small,
-    # systematic error.
+    # systematic error. (item_centers itself is computed earlier above, so
+    # the overflow-column density guard can reuse it too.)
+
+    # Gap threshold for row-clustering, ADAPTIVE to this form's own row
+    # density, not a fixed 20px constant -- confirmed necessary 2026-08-20
+    # on sample 13-scanned.jpg (a dense, machine-typed 20-row grid, ~20.6px/
+    # row average): the old fixed 20px threshold couldn't tell a gap BETWEEN
+    # two rows from a gap WITHIN one row on a form this tightly spaced, and
+    # collapsed all 138 detected marks across the entire table into ONE
+    # cluster (matched to a single item, every other item left with no
+    # marks at all -- 0/20 rows helped). item_centers's absolute positions
+    # aren't trustworthy (see _row_order_plausible above -- this form's own
+    # sequence is a mechanically uniform partition, not real measurement),
+    # but the SPACING between consecutive centers is a reasonable density
+    # estimate regardless: a formulaic table_height/n_items division still
+    # roughly reflects true row density even when the absolute positions it
+    # is anchored to are off. Floored so a degenerate or wildly off
+    # item_centers spacing can't produce a near-zero threshold (splits one
+    # row's own digits into fake separate rows).
+    #
+    # Capped at the OLD fixed 20px value, not something larger -- confirmed
+    # necessary 2026-08-20 after a real regression on sample 5-scanned.jpg
+    # (an ESSA-family form, sparser row spacing than sample 13): an earlier
+    # version of this cap (60px) let the threshold grow past 20px on this
+    # form, and a stray handwritten size-label mark (Fairlady Print's
+    # unprinted "105" override, sitting between Image FCD's and Fairlady
+    # Print's real marks) bridged two rows' clusters into one 11-mark blob
+    # -- at the OLD 20px threshold the second of the two gaps involved
+    # (26.5px) would NOT have merged, keeping the rows separate. So this
+    # threshold may only ever SHRINK below 20px (for a denser form like
+    # sample 13 that genuinely needs it), never grow past what was already
+    # proven safe on the handwritten ESSA-family forms.
+    if len(item_centers) >= 2:
+        avg_spacing_frac = (max(item_centers) - min(item_centers)) / (len(item_centers) - 1)
+    else:
+        avg_spacing_frac = 20.0 / height
+    gap_threshold_frac = max(min(avg_spacing_frac * 0.6, 20.0 / height), 8.0 / height)
+
     sorted_candidates = sorted(candidates, key=lambda c: c[2])
     y_clusters: list[list[tuple[int, float, float]]] = []
-    gap_threshold_frac = 20.0 / height
     for cand in sorted_candidates:
         if y_clusters and cand[2] - y_clusters[-1][-1][2] <= gap_threshold_frac:
             y_clusters[-1].append(cand)
         else:
             y_clusters.append([cand])
 
-    # Match clusters to items via the SAME order-preserving DP already
-    # proven for digit-to-header assignment in ocr_cell_read.py
-    # (_monotonic_assign), rather than independent nearest-center matching
-    # per cluster. Confirmed necessary 2026-08-17: independent nearest-
-    # center matching still got row 1 wrong even after fixing the decoy-
-    # row contamination above -- item 0's own row_top_frac/row_bottom_frac
-    # center was itself biased early enough that item 1's center was
-    # numerically CLOSER to row 1's real data cluster than item 0's own
-    # center was, so the naive per-cluster nearest match picked the wrong
-    # item. A joint, order-preserving assignment (this DP's whole point,
-    # per its own docstring) is far less likely to let one biased estimate
-    # pull an assignment away from its true position independent of every
-    # other row's evidence.
-    item_centers = [(it.row_top_frac + it.row_bottom_frac) / 2 for it in extracted.items]
+    # Match clusters to items via a joint, order-preserving assignment
+    # rather than independent nearest-center matching per cluster.
+    # Confirmed necessary 2026-08-17: independent nearest-center matching
+    # still got row 1 wrong even after fixing the decoy-row contamination
+    # above -- item 0's own row_top_frac/row_bottom_frac center was itself
+    # biased early enough that item 1's center was numerically CLOSER to
+    # row 1's real data cluster than item 0's own center was, so the naive
+    # per-cluster nearest match picked the wrong item.
+    #
+    # _realign_row_clusters_by_total (not plain _monotonic_assign) --
+    # confirmed necessary on sample 3-scanned.jpg: pure y-proximity has no
+    # way to tell "a row's cluster is genuinely missing" apart from "this
+    # row's own center estimate is just a little off," so when even one
+    # physical row's marks go undetected (see that function's own
+    # docstring), every item after it silently inherits the next row's
+    # cluster instead -- a cascading off-by-one that plain _monotonic_assign
+    # (still used as-is for the column/header axis just below, which has no
+    # equivalent "missing row" failure mode) can't distinguish from a
+    # correct fit. See that function's docstring for why this uses each
+    # row's own printed total as a second, independent signal rather than
+    # trying to fix item_centers itself.
     row_candidates: dict[int, list[tuple[int, float]]] = {}
+    voidable: set[int] = set()
     if 0 < len(y_clusters) <= len(item_centers):
-        cluster_ys = [sum(c[2] for c in cluster) / len(cluster) for cluster in y_clusters]
-        assignment, _avg_cost = _monotonic_assign(cluster_ys, item_centers)
+        assignment, voidable = _realign_row_clusters_by_total(y_clusters, item_centers, extracted.items)
         for cluster_idx, item_idx in assignment.items():
             row_candidates[item_idx] = [(c[0], c[1]) for c in y_clusters[cluster_idx]]
 
     if not row_candidates:
-        return {}, ["Hybrid OCR+VLM quantity read: no OCR-detected marks matched to any row."]
+        print("  hybrid OCR+VLM quantity read: no OCR-detected marks matched to any row.")
+        return {}, {}
 
     # Debug artifact (2026-08-19) so the still-open "missing values" gap
     # (isolated-test 98% vs. real end-to-end runs falling short, per
@@ -1215,74 +2278,310 @@ def _hybrid_ocr_quantities(client: ollama.Client, model: str, image_path: Path, 
                     str(i): {"item": extracted.items[i].item, "marks": [{"qty": q, "x": x} for q, x in marks]}
                     for i, marks in row_candidates.items()
                 },
+                # 2026-09-02: the VLM's own pre-reconciliation reading, snapshotted
+                # here specifically because extract_one() mutates
+                # extracted.items[i].quantities IN PLACE with this function's own
+                # output before <name>.raw.json is written -- so raw.json never
+                # reflects the VLM-alone reading, and this is the only place that
+                # ever does. Needed to audit/replay _reconcile_hybrid_with_vlm
+                # without spending a fresh live call every time.
+                "vlm_quantities": {
+                    str(i): {qp.size: qp.quantity for qp in it.quantities}
+                    for i, it in enumerate(extracted.items)
+                },
             }
-            (outdir / f"{image_path.stem}.hybrid_debug.json").write_text(json.dumps(debug, indent=2, ensure_ascii=False))
+            (outdir / f"{image_path.stem}.hybrid_debug.json").write_text(json.dumps(debug, indent=2, ensure_ascii=False), encoding="utf-8")
         except Exception:
             pass  # debug-only, never let this block the real extraction
 
-    headers_text = "\n".join(f'  "{h}" at x={x:.1f}' for h, x in sorted(header_x.items(), key=lambda kv: kv[1]))
-    rows_text = ""
-    for i, marks in row_candidates.items():
-        marks_text = ", ".join(f'"{q}" at x={x:.1f}' for q, x in marks)
-        rows_text += f"\nROW {i} ({extracted.items[i].item}): {marks_text}"
-
-    system_prompt = f"""You are given an order form image, plus REAL, ALREADY-MEASURED pixel coordinates \
-(from OCR, not your own estimate) for every size header and every handwritten quantity mark on the \
-table. These coordinates are accurate ground truth -- trust them over your own visual impression of \
-where a mark "should" belong. For each quantity mark, GROUP it with whichever header's x-coordinate \
-is numerically closest to that mark's own x-coordinate -- this is arithmetic on the numbers given, \
-not a fresh guess.
-
-SIZE HEADERS (text, x-position in pixels, image is {width}px wide):
-{headers_text}
-
-ROW QUANTITY MARKS (text, x-position in pixels), one row per line:
-{rows_text}
-
-Reply in EXACTLY this plain-text format, one line per row, and nothing else -- no explanation, no markdown:
-ROW <n>: <size>:<quantity>, <size>:<quantity>, ...
-using the header text nearest each mark's given x-position."""
-
-    try:
-        resp = client.chat(
-            model=model,
-            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": "Group the quantities as instructed.", "images": [original_bytes]}],
-            options={"temperature": 0, "num_predict": 4000},
-            think=THINK,
-        )
-    except Exception as exc:
-        return {}, [f"Hybrid OCR+VLM quantity read failed ({exc}) -- kept the model's own quantities for every row."]
+    # Group each row's marks to headers by CODE, not by asking the VLM to
+    # reproduce the arithmetic in text -- confirmed necessary 2026-08-20.
+    # The prior VLM-grouping step was already given exact ground-truth
+    # coordinates for both headers and marks (nothing left to "read" from
+    # the image), yet a real run on sample 12-scanned.jpg still silently
+    # dropped one correctly-detected mark from its own text reply (Ladies
+    # Drawers: 4 real marks given, only 3 came back) -- a pure text-
+    # generation failure on a task that's just nearest-neighbor matching on
+    # numbers already in hand. Reusing the same order-preserving DP
+    # (_monotonic_assign) already proven for digit-to-header assignment in
+    # ocr_cell_read.py removes this failure mode entirely for any row whose
+    # marks were genuinely detected, and is strictly more predictable than
+    # a model call for arithmetic it's already been handed pre-computed.
+    header_items_sorted = sorted(header_x.items(), key=lambda kv: kv[1])
+    header_xs_sorted_list = [hx for _, hx in header_items_sorted]
+    ASSIGN_COST_LIMIT = spacing * 0.6  # a loose fit means at least one mark landed on the wrong header -- don't trust the row
 
     quantities_by_index: dict[int, dict[str, int]] = {}
-    for line in resp.message.content.splitlines():
-        m = _HYBRID_ROW_LINE_RE.match(line.strip())
-        if not m:
+    for idx, marks in row_candidates.items():
+        marks_sorted = sorted(marks, key=lambda m: m[1])
+        mark_xs = [x for _, x in marks_sorted]
+        if len(mark_xs) > len(header_xs_sorted_list):
+            continue  # more marks than headers can't be a real reading -- OCR noise
+        assignment, avg_cost = _monotonic_assign(mark_xs, header_xs_sorted_list)
+        if avg_cost > ASSIGN_COST_LIMIT:
             continue
-        idx = int(m.group(1))
-        if idx not in row_candidates:
-            continue
-        pairs = _ROW_TEXT_PAIR_RE.findall(m.group(2))
-        if pairs:
-            quantities_by_index[idx] = {size: int(qty) for size, qty in pairs}
+        quantities_by_index[idx] = {
+            header_items_sorted[header_idx][0]: marks_sorted[mark_idx][0]
+            for mark_idx, header_idx in assignment.items()
+        }
 
-    # Total-checksum flagging (2026-08-19) -- see _flag_hybrid_total_mismatch's
-    # own docstring for why this flags rather than auto-corrects: a
-    # shift-based auto-correction against the printed total was tried first
-    # and confirmed mathematically incapable of ever firing (relabeling a
-    # row's header keys can't change its sum), so this only surfaces a
-    # mismatch for human review instead.
-    mismatch_notes: list[str] = []
-    for idx, qty in quantities_by_index.items():
-        printed_total = _parse_int_or_none(extracted.items[idx].row_total)
-        flag = _flag_hybrid_total_mismatch(qty, printed_total)
-        if flag is not None:
-            mismatch_notes.append(f"Hybrid OCR+VLM: row {idx} ({extracted.items[idx].item}) {flag}.")
+    # Voidable items (see _realign_row_clusters_by_total's own docstring)
+    # that still didn't end up with a cluster -- the overwhelmingly common
+    # outcome, since deprioritization means one only gets assigned when a
+    # real cluster is left over with nowhere better to go -- are forced to
+    # explicit empty quantities here, rather than left absent. "Absent"
+    # would mean _hybrid_ocr_quantities returns nothing for this index, and
+    # the caller's merge (extract_one()) falls back to the main call's own
+    # reading for it -- exactly the bug this exists to fix, since that
+    # fallback is what showed fabricated quantities for a struck-through
+    # row with a blank printed total in the first place.
+    for idx in voidable:
+        if idx not in quantities_by_index:
+            quantities_by_index[idx] = {}
+
+    # Letter-coded size columns shared across a group of rows -- 2026-08-21.
+    # Structurally the SAME "label written once, shared downward" pattern as
+    # the numeric overflow-column fix above, confirmed via direct OCR +
+    # pixel measurement on sample 3-scanned.jpg: MM K4532's row has S/M/L/
+    # XL/XXL labels stacked directly above its own quantities, in the SAME 5
+    # columns as this form's own printed 45/50/55/60/65 headers -- NOT a new
+    # overflow column past x_ceiling (unlike the numeric case above), these
+    # letter labels sit INSIDE the normal header range, overlapping columns
+    # real numeric rows elsewhere on the same form also legitimately use
+    # (e.g. B-509's row). Confirmed real: 3 rows below MM K4532 (no labels of
+    # their own) each sum EXACTLY to their own printed Total Dozen once their
+    # already-assigned "45/50/55/60/65" quantities are re-read as
+    # S/M/L/XL/XXL instead. Because these columns overlap real numeric
+    # headers used elsewhere, propagation must be scoped tightly -- only
+    # CONSECUTIVE rows immediately following an explicit label row, and only
+    # while a row's own already-assigned candidate x's stay entirely within
+    # the label columns (a genuine wider numeric row breaks containment and
+    # stops the group). Deliberately does not resolve the letter to a real
+    # catalog number here -- returns letter-coded keys (e.g. "XL") the same
+    # way extract_claude.py's own LETTER SIZES prompt rule does, so
+    # brandlist_match.annotate_and_resolve() (already wired into main()'s
+    # post-processing) converts them once the row's product match is known,
+    # with no new resolution logic needed here.
+    LETTER_SIZE_TOKENS = {"XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL"}
+    letter_labels: list[tuple[str, float, float]] = []  # (letter, x, y) -- label's own position
+    for t, b, sc in zip(texts, boxes, scores):
+        tt = t.strip().upper()
+        if sc < 0.5 or tt not in LETTER_SIZE_TOKENS or b[1] <= y_floor_px:
+            continue
+        xc = (b[0] + b[2]) / 2
+        if not (x_floor <= xc <= x_ceiling):
+            continue
+        yc = (b[1] + b[3]) / 2
+        companion = next(
+            ((t2, b2) for t2, b2, s2 in zip(texts, boxes, scores)
+             if s2 >= 0.5 and t2.isdigit()
+             and abs((b2[0] + b2[2]) / 2 - xc) <= spacing * 0.3
+             and 0 < (b2[1] + b2[3]) / 2 - yc <= band_height * 1.5),
+            None,
+        )
+        if companion is None:
+            continue
+        letter_labels.append((tt, xc, yc))
+
+    if letter_labels:
+        by_anchor: dict[int, dict[str, float]] = {}
+        anchor_label_top_y: dict[int, float] = {}  # anchor_idx -> topmost confirmed label's own y-center
+        # Row-height tolerance for preferring a VLM-hinted anchor below --
+        # reuses the same avg_spacing_frac already computed above for the
+        # row-clustering gap threshold (this form's own typical row height
+        # as a fraction of image height), not a fresh constant.
+        _hint_tolerance_frac = avg_spacing_frac * 1.2
+        for letter, xc, yc in letter_labels:
+            yf = yc / height
+            naive_idx = min(range(len(item_centers)), key=lambda i: abs(item_centers[i] - yf))
+            anchor_idx = naive_idx
+            # Prefer a VLM-hinted row over the naive nearest-center pick, but
+            # ONLY when the hinted row is still within about one row's own
+            # height of this token's real y -- confirmed necessary
+            # 2026-09-02 on sample 3-scanned.jpg: an unrestricted "always
+            # prefer the hint" version dragged in unrelated letter-shaped OCR
+            # noise from far-away rows (a couple of misread "5"s elsewhere on
+            # the page) onto the one hinted anchor just because it was the
+            # only allowed candidate. Gating by distance keeps the real win
+            # -- a genuine letter token ("XL") sitting inside MM K4532's own,
+            # content-matching-CONFIRMED row got misassigned to item 10
+            # instead under plain nearest-center matching, because item 10's
+            # own center is a weighted-division ESTIMATE (no distinctive
+            # digit-code/word for _find_item_name_y to content-match against,
+            # unlike 15-19's real matches) that happened to land numerically
+            # closer to this token's y than item 16's true position -- the
+            # same "an estimate is not real evidence" gap already documented
+            # for _recover_degenerate_item_centers's own fallback path, here
+            # corrupting anchor selection rather than row-clustering.
+            if letter_size_hints:
+                hinted = [i for i in letter_size_hints if i < len(item_centers)]
+                if hinted:
+                    hint_idx = min(hinted, key=lambda i: abs(item_centers[i] - yf))
+                    if abs(item_centers[hint_idx] - yf) <= _hint_tolerance_frac:
+                        anchor_idx = hint_idx
+            by_anchor.setdefault(anchor_idx, {})[letter] = xc
+            anchor_label_top_y[anchor_idx] = min(anchor_label_top_y.get(anchor_idx, yc), yc)
+
+        col_tolerance = spacing * 0.4
+
+        # VLM-guided digit recovery for a row mistral has directly flagged
+        # as letter-sized (MistralExtractedItem.letter_sizes) -- confirmed
+        # real and necessary on sample 3-scanned.jpg's MM K4532 row: the
+        # whole-page OCR pass above only cleanly read 2 of its 5 letter+
+        # digit column pairs ("XL"/"6", "xxC"/"6"); the other 3 (S/M/L)
+        # were merged by PaddleOCR's detector into unreadable single boxes
+        # (see _recover_letter_size_row_digits's own docstring for the two
+        # prior crop designs that failed before landing on the current
+        # per-column, y-offset-swept approach). Only runs for a row BOTH
+        # flagged by the model AND already anchoring at least one confirmed
+        # letter (by_anchor) -- with zero confirmed letters there is no
+        # known label y-position to crop around, and no safe ordinal anchor
+        # to infer the rest from (see _infer_letter_columns) either, so such
+        # a row is left as-is rather than guessed at.
+        for anchor_idx in sorted(letter_size_hints & by_anchor.keys()):
+            if anchor_idx >= len(item_centers) or anchor_idx not in anchor_label_top_y:
+                continue
+            # Search only the columns spanning from the table's own left
+            # edge to a few columns past the rightmost CONFIRMED letter --
+            # confirmed necessary 2026-09-02 on sample 3-scanned.jpg: this
+            # form has 13 header columns total, but a letter-size group only
+            # ever occupies a handful of them (5, in the confirmed case) --
+            # searching every column would mean 7-8 wasted per-column sweeps
+            # over blank paper for no benefit.
+            search_ceiling = min(x_ceiling, max(by_anchor[anchor_idx].values()) + spacing * 3)
+            search_headers = [hx for hx in header_xs_sorted if x_floor <= hx <= search_ceiling]
+            recovered = _recover_letter_size_row_digits(
+                original_bytes, search_headers, anchor_label_top_y[anchor_idx], spacing, width, height, band_height,
+            )
+            if not recovered:
+                continue
+            existing = row_candidates.setdefault(anchor_idx, [])
+            existing_xs = [x for _, x in existing]
+            for hx, qty in recovered.items():
+                if any(abs(hx - ex) <= 15 for ex in existing_xs):
+                    continue  # already found by the whole-page pass
+                existing.append((qty, hx))
+                existing_xs.append(hx)
+
+            # Safety-net numeric re-assignment, even if letter-inference
+            # below can't run -- a recovered value should never be silently
+            # lost.
+            marks_sorted = sorted(existing, key=lambda mrk: mrk[1])
+            mark_xs = [x for _, x in marks_sorted]
+            if len(mark_xs) <= len(header_xs_sorted_list):
+                assignment, avg_cost = _monotonic_assign(mark_xs, header_xs_sorted_list)
+                if avg_cost <= ASSIGN_COST_LIMIT:
+                    quantities_by_index[anchor_idx] = {
+                        header_items_sorted[hi][0]: marks_sorted[mi][0] for mi, hi in assignment.items()
+                    }
+
+            group_header_xs: list[float] = []
+            for _, x in existing:
+                nearest_h, nearest_x = min(header_x.items(), key=lambda kv: abs(kv[1] - x))
+                if abs(nearest_x - x) <= col_tolerance and nearest_x not in group_header_xs:
+                    group_header_xs.append(nearest_x)
+            inferred = _infer_letter_columns(group_header_xs, by_anchor[anchor_idx], col_tolerance)
+            if inferred is not None:
+                by_anchor[anchor_idx] = inferred
+
+        for anchor_idx, letter_columns in by_anchor.items():
+            # Walk forward from the anchor row while every row's own
+            # already-assigned candidate x's stay entirely within the label
+            # columns -- a genuine numeric row (wider, or using different
+            # columns) breaks containment and ends the group. Requiring the
+            # group to reach at least 2 rows (anchor + 1) is the corroborating
+            # signal a lone, possibly OCR-noisy label token can't provide by
+            # itself -- real handwritten letter labels on this form's photos
+            # are noisy enough that requiring 2+ DISTINCT letters (a cleaner
+            # bar) turned out too strict to even fire on the confirmed real
+            # case (only "XL" OCR'd cleanly enough to exact-match; "XXL" read
+            # as "xxC", S/M/L unreadable at low score) -- multi-row
+            # containment is the more reliable signal here instead.
+            group_indices: list[int] = []
+            idx = anchor_idx
+            while idx in row_candidates:
+                xs = [x for _, x in row_candidates[idx]]
+                if not xs or not all(any(abs(x - lx) <= col_tolerance for lx in letter_columns.values()) for x in xs):
+                    break
+                group_indices.append(idx)
+                idx += 1
+            if len(group_indices) < 2:
+                continue
+            for gidx in group_indices:
+                relabeled: dict[str, int] = {}
+                for qty, x in sorted(row_candidates[gidx], key=lambda m: m[1]):
+                    nearest_letter = min(letter_columns, key=lambda l: abs(letter_columns[l] - x))
+                    if abs(letter_columns[nearest_letter] - x) > col_tolerance:
+                        continue
+                    relabeled[nearest_letter] = qty
+                if relabeled:
+                    quantities_by_index[gidx] = relabeled
 
     used = len(quantities_by_index)
-    note = (f"Hybrid OCR+VLM quantity read: used for {used}/{len(row_candidates)} rows with OCR-detected "
-            f"marks ({n_items - len(row_candidates)} row(s) had no OCR marks in range and kept the "
-            f"model's own reading).")
-    return quantities_by_index, [note] + mismatch_notes
+    voided = sum(1 for idx in voidable if idx in quantities_by_index)
+    # skipped_low_confidence counts only real row_candidates entries that
+    # didn't make it into quantities_by_index -- voided items are counted
+    # separately since they're a deliberate, confident empty result, not a
+    # low-confidence skip, and weren't in row_candidates to begin with.
+    skipped_low_confidence = sum(1 for idx in row_candidates if idx not in quantities_by_index)
+    print(f"  hybrid OCR quantity read: used for {used}/{n_items} rows "
+          f"({n_items - len(row_candidates) - voided} row(s) had no OCR-detected marks in range, "
+          f"{skipped_low_confidence} row(s) had marks but the header assignment was too "
+          f"low-confidence to trust -- both kept the model's own reading instead; "
+          f"{voided} row(s) forced to empty as void/struck-out).")
+
+    # Total-checksum flagging (2026-08-19, converted to a per-cell flag
+    # 2026-08-22) -- see _flag_hybrid_total_mismatch's own docstring for why
+    # this flags rather than auto-corrects: a shift-based auto-correction
+    # against the printed total was tried first and confirmed mathematically
+    # incapable of ever firing (relabeling a row's header keys can't change
+    # its sum), so this only surfaces a mismatch for human review instead.
+    # Flags the WHOLE row (every size this row's hybrid read reported) since
+    # a sum mismatch alone doesn't pin down which single cell is wrong.
+    #
+    # Severity is scaled by the SIZE of the mismatch, not treated as one
+    # binary signal -- confirmed necessary 2026-08-22 on a real
+    # sample 3-scanned.jpg run: 16 of 20 rows got flagged this way in one
+    # pass, with diffs ranging from -1 to +35, all colored identically
+    # ("unresolved", red, "most important to check"). Per this project's
+    # own repeatedly-confirmed history (e.g. the "FASTASTIC COLLAR" and
+    # "MM Looper 4289" cases elsewhere in this file/CLAUDE.md), a small
+    # (+-2) gap is almost always the MODEL misreading its own single-digit
+    # printed total, not a real missing/extra quantity -- burying that
+    # near-certainly-fine majority in the same red bucket as a genuine
+    # 22-unit gap defeats the entire point of flagging (helping a reviewer
+    # prioritize). Small gaps downgrade to "unverified" (gray, worth a
+    # glance) instead.
+    # 2026-09-02: each row is now reconciled against the VLM's OWN main-call
+    # reading for that row (_reconcile_hybrid_with_vlm) before the checksum
+    # check below runs -- previously this loop trusted hybrid's map outright,
+    # a hierarchy CLAUDE.md's own dated findings confirmed was the wrong
+    # shape (hybrid and the VLM fail in each other's strengths, not the same
+    # places). extracted.items[idx].quantities is still the VLM's untouched
+    # reading at this point -- the caller (extract_one()) doesn't overwrite it
+    # until after this function returns.
+    size_headers_set = set(extracted.size_headers)
+    flags: dict[int, dict] = {}
+    for idx, qty in quantities_by_index.items():
+        printed_total = _parse_int_or_none(extracted.items[idx].row_total)
+        vlm_map = {qp.size: qp.quantity for qp in extracted.items[idx].quantities}
+        merged, conflict_flag = _reconcile_hybrid_with_vlm(vlm_map, qty, printed_total, size_headers_set)
+        quantities_by_index[idx] = merged
+        if conflict_flag is not None:
+            # A genuine source disagreement is the more specific signal --
+            # don't also run the total-mismatch check on top of it.
+            flags[idx] = conflict_flag
+            continue
+        flag_text = _flag_hybrid_total_mismatch(merged, printed_total)
+        if flag_text is not None:
+            diff = sum(merged.values()) - printed_total
+            status = "unresolved" if abs(diff) > 2 else "unverified"
+            flags[idx] = {
+                "status": status,
+                "sizes": sorted(merged.keys(), key=lambda s: int(s) if s.isdigit() else 0),
+                "note": f"Hybrid OCR+VLM: {flag_text}.",
+            }
+    return quantities_by_index, flags
 
 
 def _headers_found_lenient(header_crop_bytes: bytes, size_headers: list[str], score_threshold: float = 0.5) -> int:
@@ -1363,7 +2662,7 @@ def _select_cv_row_boundaries(image_bytes: bytes, size_headers: list[str], expec
         bad_count = 0
         for idx in range(n_items):
             row_bytes, header_h_px = build_row_crop(candidate_image, cand_boundaries, idx, candidate_header_crop)
-            _, _, item_name_ocr, _ = ocr_row(row_bytes, header_h_px, size_headers, score_threshold=0.5)
+            _, _, item_name_ocr, _, _ = ocr_row(row_bytes, header_h_px, size_headers, score_threshold=0.5)
             if not item_alignment_ok(item_name_ocr, expected_items[idx]):
                 bad_count += 1
 
@@ -1491,10 +2790,57 @@ def _recount_quantities(
     return notes, flags
 
 
+def _normalize_fused_size_headers(extracted: ExtractedForm) -> None:
+    """Repairs a real, non-deterministic main-call quirk (root-caused
+    2026-08-22 on sample 3-scanned.jpg, previously just documented as an
+    unexplained "merged-header" flake -- see CLAUDE.md's 2026-08-21 note):
+    on some draws mistral reports extracted.size_headers as "REAL/DECOY"
+    fused strings (e.g. "45/18") instead of the real printed header alone.
+    This ESSA-family form prints a SECOND header row directly below the
+    real one -- an age/chest-equivalent number the model is otherwise told
+    to ignore (see this file's/CLAUDE.md's "Header-row hallucination"
+    history) -- and on this flake, instead of ignoring it, the model
+    concatenates it onto the real header with a "/".
+
+    This is NOT the OCR-side merged-token bug _split_merged_header_token
+    fixes (that's PaddleOCR fusing two adjacent PRINTED digits into one
+    detection); this fusion happens in the model's own structured JSON
+    output, upstream of OCR entirely -- so OCR can never match "45/18"
+    against a page that only prints "45", the header-count guard
+    (correctly) treats that as "not enough real headers found", and the
+    ENTIRE hybrid OCR pass silently skips itself for the whole image on
+    every draw this hits, not just the affected columns.
+
+    Confirmed via a real raw.json (sample 3-scanned.jpg, 2026-08-22): item
+    quantities are never affected, only size_headers itself, and the FIRST
+    segment is always the genuine printed header -- it exactly reproduces
+    this form's real 45-105 header row, and every one of those values is a
+    real, valid size in this business's own catalog
+    (brandlist_match.known_numeric_sizes()), unlike most of the second
+    segment's values (18/20/22/24/26/32/34/36/38/42 are NOT valid catalog
+    sizes -- only 30/40 coincidentally are, so catalog membership alone
+    can't cleanly discriminate the two segments for every column, but
+    segment ORDER can: the model always reads the real header first, top
+    to bottom, then appends the decoy row's value after it)."""
+    fixed = []
+    changed = False
+    for h in extracted.size_headers:
+        if "/" in h:
+            first = h.split("/", 1)[0].strip()
+            if first.isdigit():
+                fixed.append(first)
+                changed = True
+                continue
+        fixed.append(h)
+    if changed:
+        print(f"  main call reported fused header/decoy size_headers ({extracted.size_headers}) -- repaired to {fixed}.")
+        extracted.size_headers = fixed
+
+
 MAIN_CALL_MAX_RETRIES = 1  # extra attempts beyond the first, only on the zero-quantities flake below
 
 
-def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Path, usage_log: Path, system_prompt: str, brandlist_available: bool = False, do_recount: bool = True, do_preprocess: bool = False, do_hybrid: bool = False) -> OrderForm:
+def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Path, usage_log: Path, system_prompt: str, brandlist_available: bool = False, do_recount: bool = False, do_preprocess: bool = False, do_hybrid: bool = True) -> OrderForm:
     t_image_start = time.perf_counter()
     # mistral-only, and opt-in (do_preprocess), NOT automatic on every
     # mistral call -- automated deskew + contrast normalization (see
@@ -1527,6 +2873,16 @@ def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Pat
 
     extracted = None
     error = None
+    # VLM-confirmed letter-size row indices (mistral-only, see
+    # MistralExtractedItem.letter_sizes) -- captured BEFORE
+    # _mistral_form_to_extracted_form discards the mistral-only schema, and
+    # threaded into _hybrid_ocr_quantities below so it can target its
+    # crop-based digit-recovery pass (_recover_letter_size_row_digits) only
+    # at rows the model itself has directly flagged, rather than relying
+    # purely on blind whole-page OCR text matching for a rare, hard-to-read
+    # S/M/L label token (see that function's docstring for why the whole-
+    # page pass alone isn't enough on a cramped stacked label+digit cell).
+    letter_size_hints: set[int] = set()
     for attempt in range(MAIN_CALL_MAX_RETRIES + 1):
         parsed, error, usage = _call_schema(client, model, system_prompt, USER_PROMPT, [image_bytes], main_schema_cls, MAX_TOKENS)
         print(f"  usage (main, attempt {attempt + 1}): prompt={usage.get('prompt_eval_count')} eval={usage.get('eval_count')} {usage.get('duration_seconds', 0):.1f}s" + (f" ERROR: {error}" if error else ""))
@@ -1534,6 +2890,7 @@ def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Pat
         if error:
             continue
         if main_schema_cls is MistralExtractedForm:
+            letter_size_hints = {i for i, it in enumerate(parsed.items) if it.letter_sizes}
             parsed = _mistral_form_to_extracted_form(parsed)
         n_pairs = sum(len(it.quantities) for it in parsed.items)
         total_value = sum(qp.quantity for it in parsed.items for qp in it.quantities)
@@ -1554,25 +2911,45 @@ def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Pat
     if extracted is None:
         raise RuntimeError(f"Main extraction call failed after {MAIN_CALL_MAX_RETRIES + 1} attempt(s): {error}")
 
+    _normalize_fused_size_headers(extracted)
+
+    # 2026-08-22: bookkeeping/diagnostic text from the hybrid and recount
+    # passes used to be dumped straight into extracted.notes -- a growing
+    # wall of prose at the top of the review page that didn't point at any
+    # specific cell. Genuinely suspect rows are now captured as structured
+    # flags instead (same {"status", "sizes", "note"} shape
+    # extract_claude.py's own recount pass already uses), so
+    # generate_review.py highlights the actual doubtful cells directly;
+    # routine status messages ("used the whole-table fallback crop",
+    # "skipped (--no-recount)") go to the console instead, since they're
+    # operational information for whoever ran the script, not something a
+    # reviewer checking cells against a photo needs to read. extracted.notes
+    # is left for genuine page-level handwritten remarks only (its
+    # originally-intended purpose, per schema.py's own field description).
+    hybrid_flags: dict[int, dict] = {}
     if do_hybrid and extracted.items:
         try:
-            hybrid_quantities, hybrid_notes = _hybrid_ocr_quantities(client, model, image_path, extracted, outdir)
+            hybrid_quantities, hybrid_flags = _hybrid_ocr_quantities(image_path, extracted, outdir, letter_size_hints)
             for i, qty in hybrid_quantities.items():
                 extracted.items[i].quantities = [QuantityPair(size=size, quantity=q) for size, q in qty.items()]
-            extracted.notes.extend(hybrid_notes)
         except Exception as exc:
-            extracted.notes.append(f"Hybrid OCR+VLM quantity read failed ({exc}) -- kept the model's own quantities for every row.")
+            print(f"  hybrid OCR+VLM quantity read failed ({exc}) -- kept the model's own quantities for every row.")
 
-    recount_flags: list[dict] = []
+    recount_flags: list[dict] = [hybrid_flags.get(i, {"status": "no_recount"}) for i in range(len(extracted.items))]
     if do_recount and extracted.items:
         try:
-            notes, recount_flags = _recount_quantities(client, model, image_path, extracted, usage_log, brandlist_available)
-            extracted.notes.extend(notes)
+            pass_notes, recount_flags_from_pass = _recount_quantities(client, model, image_path, extracted, usage_log, brandlist_available)
+            for pass_note in pass_notes:
+                print(f"  recount: {pass_note}")
+            # Recount's own flag wins over a hybrid total-mismatch flag for
+            # the same row only when it actually has something to say --
+            # "no_recount"/"ok" would otherwise silently erase a real hybrid
+            # finding for a row recount didn't cover.
+            for i, flag in enumerate(recount_flags_from_pass):
+                if i < len(recount_flags) and flag.get("status") not in (None, "no_recount", "ok"):
+                    recount_flags[i] = flag
         except Exception as exc:
-            extracted.notes.append(f"Row-crop quantity recount failed ({exc}) -- kept the original full-page quantities for every row.")
-            recount_flags = [{"status": "no_recount", "note": f"recount pass raised an exception: {exc}"} for _ in extracted.items]
-    elif not do_recount:
-        extracted.notes.append("Row-crop quantity recount skipped (--no-recount).")
+            print(f"  row-crop quantity recount failed ({exc}) -- kept the original full-page quantities for every row.")
 
     _write_debug_artifacts(outdir, image_path.stem, extracted, recount_flags)
     total_duration = time.perf_counter() - t_image_start
@@ -1581,26 +2958,94 @@ def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Pat
     return _to_order_form(extracted, image_path.name)
 
 
+_FLAG_SEVERITY = {"no_recount": 0, "ok": 0, "unverified": 1, "resolved": 2, "auto_corrected": 2, "unresolved": 3}
+
+
+def _merge_flag(base: dict | None, status: str, sizes: list[str], note: str) -> dict:
+    """Combines a new catalog-derived flag with whatever flag (if any)
+    already covers this row -- keeps the higher-severity status (so a real
+    hybrid total-mismatch, "unresolved", isn't silently downgraded by a
+    lower-severity catalog note), but always unions in the newly-flagged
+    sizes and appends the new note, so a reviewer sees every reason a row
+    is worth a second look, not just the first one found."""
+    base = base or {}
+    base_status = base.get("status", "no_recount")
+    new_status = status if _FLAG_SEVERITY.get(status, 0) > _FLAG_SEVERITY.get(base_status, 0) else base_status
+    merged_sizes = sorted(set(sizes) | set(base.get("sizes", [])), key=lambda s: (0, int(s)) if s.isdigit() else (1, s))
+    notes = [n for n in [base.get("note"), note] if n]
+    return {"status": new_status, "sizes": merged_sizes, "note": " | ".join(notes)}
+
+
+def _merge_brandlist_flags_into_file(recount_flags_path: Path, annotations: list[dict]) -> None:
+    """Folds brandlist_match.py's own catalog-cross-check signals
+    (likely_column_shift, sizes_outside_catalog_range) into the same
+    per-row flag file generate_review.py already renders as highlighted
+    cells -- these are just as much a "this quantity looks suspicious"
+    signal as the hybrid total-mismatch check, and pinning down the EXACT
+    size(s) involved (rather than flagging a whole row, the total-mismatch
+    check's only option) is a real quality improvement: a reviewer can look
+    at one or two cells instead of re-checking an entire row against the
+    photo. likely_column_shift additionally carries a concrete suggested
+    correction (from detect_column_shift), so it's treated as higher
+    confidence ("resolved" severity, matching the same status
+    generate_review.py already uses for "disagreed but auto-resolved") than
+    a bare out-of-range flag with no specific fix in hand ("unverified").
+    Only touches the file this run's own extract_one() already wrote via
+    _write_debug_artifacts -- silently does nothing if it's missing (e.g.
+    an image with zero items)."""
+    if not recount_flags_path.exists():
+        return
+    flags: list[dict] = json.loads(recount_flags_path.read_text(encoding="utf-8"))
+    changed = False
+    for idx, note in enumerate(annotations):
+        if idx >= len(flags):
+            continue
+        shift = note.get("likely_column_shift")
+        if shift:
+            sizes = list(shift["suggested_correction"].keys())
+            # ASCII "->" not a unicode arrow -- write_text() calls in this
+            # file don't pass encoding="utf-8" (a pre-existing gap across
+            # every debug-artifact writer, not just this one), so they fall
+            # back to the platform default codec; confirmed by direct
+            # testing this raises UnicodeEncodeError under Windows' cp1252
+            # default the moment a non-ASCII character shows up in a note.
+            correction = ", ".join(f"{k}->{v}" for k, v in shift["suggested_correction"].items())
+            flags[idx] = _merge_flag(flags[idx], "resolved", sizes,
+                f"Catalog check: likely column shift (offset {shift['offset']:+d}) -- try {correction}.")
+            changed = True
+        elif note.get("sizes_outside_catalog_range"):
+            sizes = [str(s) for s in note["sizes_outside_catalog_range"]]
+            flags[idx] = _merge_flag(flags[idx], "unverified", sizes,
+                f"Catalog check: size(s) {', '.join(sizes)} aren't in this product's known catalog sizes.")
+            changed = True
+    if changed:
+        recount_flags_path.write_text(json.dumps(flags, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
 def main():
     load_dotenv()
 
-    parser = argparse.ArgumentParser(description="Extract structured data from order form photos via Ollama Cloud (comparison test against extract_claude.py -- see module docstring).")
+    parser = argparse.ArgumentParser(description="Extract structured data from order form photos via Ollama Cloud (production pipeline, default model mistral-large-3:675b -- see module docstring).")
     parser.add_argument("input", help="Path to a single image, or a folder of images. Quote paths containing spaces.")
     parser.add_argument("--outdir", default="extracted_ollama_cloud", help="Output directory (default: ./extracted_ollama_cloud)")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama Cloud model tag (default: {DEFAULT_MODEL} -- see module docstring for why qwen3-vl:235b-cloud, the originally-targeted model, isn't the default)")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama Cloud model tag (default: {DEFAULT_MODEL} -- see HISTORY.md for the model comparison this was chosen from)")
     parser.add_argument("--usage-log", default="usage_log_ollama_cloud.csv", help="CSV file every call's token usage/timing is appended to (default: ./usage_log_ollama_cloud.csv, kept separate from extract_claude.py's usage_log.csv)")
     parser.add_argument("--no-brandlist-check", action="store_true", help="Skip the local (free, no API cost) cross-check against the brandlist product catalog.")
-    parser.add_argument("--no-recount", action="store_true", help="Skip the per-row recount pass. Confirmed 2026-08-13: on qwen3.5:397b the recount call failed on every row in every trial (truncation or invalid JSON), so it added ~30-90s of latency with zero corroboration -- skipping it is how the under-2.5-min timing was achieved. The 2026-08-14 switch to a plain-text row format (see ROW_RECOUNT_TEXT_PROMPT) fixed that specific JSON-compliance failure, but a real, separate regression was found the same day on a dense 19-column form (sample 8.jpeg): a misaligned row-crop's data got silently accepted via the catalog tiebreak and marked 'resolved' (i.e. trustworthy) when it was actually a neighboring row's data -- worse than the original bleed error, since it reads as high-confidence. Recommend keeping --no-recount as the default choice until row-crop alignment reliability (row_top_frac/row_bottom_frac from the main call) is independently improved, not just the output format.")
+    parser.add_argument("--recount", action="store_true", help="Run the per-row recount pass (default: off). Row-crop alignment (row_top_frac/row_bottom_frac from the main call) has a documented reliability gap -- a misaligned crop can get silently accepted as 'resolved' when it actually holds a neighboring row's data, which reads as higher-confidence than doing nothing. Off by default for that reason; see HISTORY.md for the specific case this caused. --hybrid-quantities is the recommended way to independently verify quantities instead.")
     parser.add_argument("--think", action="store_true", help="Leave the model's internal 'thinking' mode on (Ollama Cloud default) instead of forcing it off. Confirmed 2026-08-13: the right setting is model-specific -- qwen3.5:397b is faster AND accurate with thinking off, but kimi-k2.6 returns deterministically all-zero quantities with thinking off and needs it on to produce a real reading. Try --no-think first (this file's default); if a model comes back schema-valid but all-zero, retry with --think before concluding the model can't do the task.")
     parser.add_argument("--no-think", dest="think", action="store_false", help="Force thinking off (default behavior already -- explicit flag for clarity/scripting).")
-    parser.add_argument("--preprocess-image", action="store_true", help="Apply automated deskew + CLAHE contrast normalization (preprocess_for_vlm.py) before sending the image to mistral. Confirmed 2026-08-17 to fix a real row-bleed bug on sample 8.jpeg (values from one row contaminating the row below it), but ALSO confirmed via direct A/B and regression testing the same day to damage other forms -- sample 7.jpeg regressed on nearly every row (a previously exact-match row picked up both a shift and a new digit error), sample 5.jpeg was a wash. Off by default for exactly that reason -- turn this on only for a specific image you know has a row-bleed problem, not as a general-purpose quality improvement. See CLAUDE.md's dated section for the full numbers.")
-    parser.add_argument("--hybrid-quantities", action="store_true", help="Re-read quantities by giving mistral REAL OCR-measured coordinates (not its own self-report) for headers and marks, then asking it to group each mark with its nearest header by x-position -- one whole-image OCR pass, no per-row crops. The core mechanism is confirmed strong in isolation (47 of 48 hand-fed marks exactly correct on sample 12-scanned.jpg), but full pipeline integration surfaced real bugs (a decoy sub-header row contaminating candidates; unreliable row_top_frac/row_bottom_frac misassigning rows) -- two are fixed, but end-to-end completeness on this same form still falls short of the isolated result. Experimental, off by default -- see CLAUDE.md's dated section for the honest current state, not just the best-case number.")
+    parser.add_argument("--think-effort", choices=["low", "medium", "high", "max"], default=None,
+                         help="Pass a string reasoning-effort level to Ollama's think= parameter instead of a bare bool. Confirmed necessary 2026-09-02 for glm-5.3-flash: that model's own reasoning is ALWAYS ON (per its ollama.com model page -- 'effort tunable per request across low, high, and max levels'), so a plain --think/--no-think bool has no effect on it at all. Confirmed via real runs on sample 3-scanned.jpg: 'low' avoids the truncation (~2900 tokens, ~13s) but flakes to zero quantities often; 'medium' -- not a real tier this model's own vocabulary recognizes at all (only low/high/max) -- fails identically to the bare bool (32000-token truncation, both attempts); 'high' avoided both problems on that form (20/20 rows exact vs. mistral-large-3:675b's own reading) but STILL flaked empty 2 of 3 attempts on a different, free-form page (sample 2.jpeg) -- 'high' is not actually a fix for the flake rate, it just happened to succeed on the first try on the one form it was first tested against. 'max', the model's own documented top tier: the installed `ollama` package's own ChatRequest normally validates think as bool | Literal['low','medium','high'] via Pydantic and rejects 'max' client-side before any request is sent -- confirmed via a raw HTTP call that the Ollama Cloud API itself accepts 'max' fine, so _call_schema bypasses the SDK's own chat() method (see _chat_bypassing_sdk_validation) specifically for this value. The bypass mechanism itself works, but 'max' is WORSE than 'high' in practice: tried on sample 5-scanned.jpg (the easiest form in this project's test set) and it burned the entire 32000-token ceiling in 273.6s without ever finishing (done_reason=length) -- 'max' triggers even more verbose reasoning than this pipeline's current MAX_TOKENS budget can accommodate, so its actual accuracy has never been observed. Not recommended; 'high' remains the best working setting despite its own flake rate. Takes precedence over --think/--no-think when set. Not yet confirmed for any other model.")
+    parser.add_argument("--preprocess-image", action="store_true", help="Apply automated deskew + CLAHE contrast normalization (preprocess_for_vlm.py) before sending the image to mistral. Confirmed to fix a real row-bleed bug on one hard form, but also confirmed via A/B testing to damage other forms (a previously exact-match row picked up a shift and a new digit error). Off by default for that reason -- turn this on only for a specific image you know has a row-bleed problem, not as a general-purpose quality improvement. See HISTORY.md for the full numbers.")
+    parser.add_argument("--no-hybrid-quantities", action="store_true", help="Skip the OCR-grounded quantity re-read (default: on). Re-reads quantities from REAL OCR-measured coordinates (not the VLM's self-report) for headers and marks, then groups each mark with its nearest header by x-position -- one whole-image OCR pass, no per-row crops, header-grouping done deterministically in code (order-preserving DP), not by a model call. Extensively tested and regression-checked (see HISTORY.md): corrects mistral's column-position drift, recovers handwritten overflow columns past the printed grid, resolves letter-coded sizes (S/M/L/XL/XXL), and reconciles its own reading against the VLM's per-row reading rather than unconditionally overriding it. This is the main accuracy lever for the production pipeline -- only disable it to isolate a bug or compare raw VLM output.")
     parser.set_defaults(think=None)
     args = parser.parse_args()
 
     global THINK
     if args.think is not None:
         THINK = args.think
+    if args.think_effort is not None:
+        THINK = args.think_effort
 
     client = get_client()
 
@@ -1640,7 +3085,7 @@ def main():
     for i, img_path in enumerate(image_paths, 1):
         print(f"[{i}/{len(image_paths)}] Extracting {img_path.name} ...", flush=True)
         try:
-            forms[img_path.stem] = extract_one(client, args.model, img_path, outdir, usage_log, system_prompt, brandlist_available, do_recount=not args.no_recount, do_preprocess=args.preprocess_image, do_hybrid=args.hybrid_quantities)
+            forms[img_path.stem] = extract_one(client, args.model, img_path, outdir, usage_log, system_prompt, brandlist_available, do_recount=args.recount, do_preprocess=args.preprocess_image, do_hybrid=not args.no_hybrid_quantities)
         except Exception as exc:
             print(f"  FAILED: {exc}", file=sys.stderr)
 
@@ -1655,15 +3100,16 @@ def main():
             size_headers = stage_a.get("size_headers", [])
             annotations = brandlist_match.annotate_and_resolve(form, size_headers)
             (outdir / f"{img_path.stem}.brandlist.json").write_text(
-                json.dumps(annotations, indent=2, ensure_ascii=False)
+                json.dumps(annotations, indent=2, ensure_ascii=False), encoding="utf-8"
             )
+            _merge_brandlist_flags_into_file(outdir / f"{img_path.stem}.recount_flags.json", annotations)
             party_check = brandlist_match.resolve_party_name(stage_a.get("seller_name", ""), form.party_name)
             if party_check is not None:
                 (outdir / f"{img_path.stem}.party_check.json").write_text(
-                    json.dumps(party_check, indent=2, ensure_ascii=False)
+                    json.dumps(party_check, indent=2, ensure_ascii=False), encoding="utf-8"
                 )
         json_out = outdir / f"{img_path.stem}.json"
-        json_out.write_text(json.dumps(form.model_dump(mode="json", exclude={"source_file"}), indent=2, ensure_ascii=False))
+        json_out.write_text(json.dumps(form.model_dump(mode="json", exclude={"source_file"}), indent=2, ensure_ascii=False), encoding="utf-8")
         n_qty = sum(len(it.quantities) for it in form.items)
         print(f"  -> {json_out.name}  ({len(form.items)} items, {n_qty} size/qty cells, {len(form.notes)} notes)")
         all_review_rows.extend(flatten_for_review(form))

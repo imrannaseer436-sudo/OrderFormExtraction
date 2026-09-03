@@ -28,6 +28,20 @@ from pydantic import BaseModel, Field, ValidationError, field_validator, model_v
 KNOWN_STYLE_CODES = {"IE", "OE", "RN", "RNS"}
 _TRAILING_CODE_RE = re.compile(r"^(?P<name>.+?)\s+(?P<code>[A-Z]{2,4})$")
 
+# A real size header on these forms is either a plain number ("45", "105")
+# or, more rarely, a clothing letter-size code -- never a running-total
+# column label. Confirmed necessary 2026-09-01: a live Stage A call
+# included the form's own trailing "Total Dozen" column as a 14th
+# size_headers entry ("Total"), which corrupted every row's column-spacing
+# math downstream (an empty read on one row, a fabricated "Total" quantity
+# key on another, systematic +1 column shifts elsewhere) -- size_headers
+# had no validation at all before this. LETTER_SIZE_CODES matches the
+# vocabulary ocr_cell_read.py's stacked-label detection also uses, so a
+# genuine letter-coded header (rare, but real -- see CLAUDE.md's sample 3
+# MM K4532 case) isn't dropped here just because it isn't numeric.
+LETTER_SIZE_CODES = {"XS", "S", "M", "L", "XL", "XXL", "2XL", "3XL", "4XL"}
+_NUMERIC_HEADER_RE = re.compile(r"^\d{1,3}$")
+
 # Safety net for when the model leaks its normalization reasoning into the
 # order_date field (e.g. "30/13/26 (normalize to DD/MM/YYYY: 30/01/2026)")
 # despite the prompt asking for only the final value. Keeps the first
@@ -63,6 +77,22 @@ class ItemStub(BaseModel):
             self.item = m.group("name")
         return self
 
+    @model_validator(mode="after")
+    def _clear_numeric_type(self) -> "ItemStub":
+        # Safety net for a confirmed real Stage A hallucination (2026-09-01,
+        # sample 3.jpeg): on a form where a secondary age/chest-equivalent
+        # header row sits close to a mostly blank/faint Style column, the
+        # model can read that header row's own number sequence as if it
+        # were each item's style code (e.g. every row in order getting
+        # "18", "20", "22", ... -- the header sequence itself, not real
+        # per-row data). A real style code on these forms is always
+        # alphabetic (RN, RNS, OE, IE, etc.), never a bare number, so
+        # dropping a purely-numeric `type` is safe and can't discard a
+        # genuine style code.
+        if self.type.isdigit():
+            self.type = ""
+        return self
+
 
 class FormMeta(BaseModel):
     seller_name: str = Field(default="", description="Letterhead/seller company name, NOT the buyer.")
@@ -81,6 +111,11 @@ class FormMeta(BaseModel):
             return v
         m = _DATE_RE.search(v)
         return m.group(0) if m else v
+
+    @field_validator("size_headers")
+    @classmethod
+    def _drop_non_size_headers(cls, v: list[str]) -> list[str]:
+        return [h for h in v if _NUMERIC_HEADER_RE.match(h) or h.upper() in LETTER_SIZE_CODES]
 
     @model_validator(mode="after")
     def _forward_fill_ditto_item_names(self) -> "FormMeta":

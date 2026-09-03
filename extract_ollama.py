@@ -65,7 +65,7 @@ from pathlib import Path
 from ollama import chat, ResponseError
 from PIL import Image
 
-from grid import iter_row_boundary_candidates
+from grid import iter_row_boundary_candidates_auto
 from ocr_cell_read import read_rows, count_headers_found, ocr_row, item_alignment_ok
 from schema import FormMeta, OrderForm, OrderItem, validate_meta
 from prompt import build_stage_a_prompt, build_row_prompt, STAGE_A_SCHEMA
@@ -155,12 +155,18 @@ def build_row_crop(
     return buf.getvalue(), header_crop.height
 
 
-def stage_b_row(model: str, image_bytes: bytes, item: str, style: str, headers: list[str], cropped: bool = False) -> tuple[dict[str, int], str]:
+def stage_b_row(model: str, image_bytes: bytes, item: str, style: str, headers: list[str], cropped: bool = False, freeform: bool = False) -> tuple[dict[str, int], str]:
     """One call focused on a single row (a header+row crop when grid
-    detection succeeded, otherwise the full image). Returns {size: qty} for filled cells only."""
+    detection succeeded, a full image with a shared headers list when
+    grid detection failed for just this row, or -- freeform=True -- a
+    full image with NO shared headers list at all, e.g. a free-form
+    handwritten page grid.py found zero row candidates on for the WHOLE
+    image; see ROW_PROMPT_TEMPLATE_FREEFORM's own docstring for why this
+    must be a distinct mode from the ordinary full-image fallback rather
+    than a clause added to it). Returns {size: qty} for filled cells only."""
     response = chat(
         model=model,
-        messages=[{"role": "user", "content": build_row_prompt(item, style, headers, cropped), "images": [image_bytes]}],
+        messages=[{"role": "user", "content": build_row_prompt(item, style, headers, cropped, freeform), "images": [image_bytes]}],
         options={"temperature": 0},
     )
     raw_line = response.message.content.strip()
@@ -240,8 +246,48 @@ def extract_one(model: str, image_path: Path, outdir: Path) -> OrderForm:
     best_candidate = None
     best_bad_indices: set[int] = set()
     best_row_cache: dict[int, tuple] = {}
-    for cand_boundaries, cand_skew in iter_row_boundary_candidates(image_bytes, n_items):
-        candidate_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    # iter_row_boundary_candidates_auto (not the plain, non-retrying
+    # iter_row_boundary_candidates): automatically retries at 2x/4x
+    # upscale when native resolution finds zero USABLE row-boundary
+    # candidates at all -- a low-resolution or tightly-cropped photo can
+    # have real ruled lines closer together than the detector's minimum
+    # gap in absolute pixels, confirmed on a real image in this project's
+    # history (see grid.py's own docstring).
+    #
+    # Deliberately stops at scale=1 as soon as best_candidate is set
+    # (i.e. something already cleared the 50%-good_count bar below), NOT
+    # only once something PERFECT is found -- confirmed necessary by a
+    # real regression, not just a theoretical concern: an early version
+    # of this wiring let the loop keep exploring 2x/4x candidates
+    # whenever the native-resolution best wasn't literally n_items/n_items
+    # perfect, and a 4x-upscaled candidate then won on this loop's coarse
+    # (word-overlap) alignment metric while its actual OCR digit-reading
+    # was WORSE than the native candidate it replaced -- confirmed via a
+    # real sample 5.jpeg run producing a 5792px-wide row crop (4x
+    # upscale) that PaddleOCR had to silently downscale again internally,
+    # and two rows reading measurably worse than the established
+    # ground truth. This check restores the originally-intended scope:
+    # only escalate resolution when native resolution found NOTHING
+    # usable, never to chase a marginal alignment-score improvement over
+    # an already-good native match.
+    # An empty meta.size_headers means Stage A found no single shared
+    # header row to report at all (a free-form handwritten page -- see
+    # prompt.py's rule D and the size_headers extraction rule). The whole
+    # grid-based candidate search below only makes sense when there's a
+    # real header row to align crops against -- skip it entirely rather
+    # than let it run: confirmed by a real crash (2026-09-01) that with
+    # headers=[], count_headers_found's `headers_found < len(headers)*0.7`
+    # check vacuously passes (0 < 0 is False) for ANY candidate, letting a
+    # meaningless "match" through, and ocr_row() then crashes indexing
+    # into an empty header-position list. Going straight to the free-form
+    # VLM fallback below is also the semantically correct behavior here,
+    # not just a crash workaround.
+    for cand_boundaries, cand_skew, working_image_bytes, scale in (
+        iter_row_boundary_candidates_auto(image_bytes, n_items) if meta.size_headers else []
+    ):
+        if scale > 1 and best_candidate is not None:
+            break
+        candidate_image = Image.open(io.BytesIO(working_image_bytes)).convert("RGB")
         candidate_image = candidate_image.rotate(cand_skew, resample=Image.BICUBIC, fillcolor=(255, 255, 255))
         candidate_header_crop, header_crop_bytes = build_header_crop(candidate_image, cand_boundaries)
         headers_found = count_headers_found(header_crop_bytes, meta.size_headers)
@@ -254,7 +300,7 @@ def extract_one(model: str, image_path: Path, outdir: Path) -> OrderForm:
             row_bytes, header_h_px = build_row_crop(candidate_image, cand_boundaries, idx, candidate_header_crop)
             result = ocr_row(row_bytes, header_h_px, meta.size_headers, score_threshold=0.5)
             cand_row_cache[idx] = result
-            _, _, item_name_ocr, _ = result
+            _, _, item_name_ocr, _, _ = result
             if not item_alignment_ok(item_name_ocr, meta.items[idx].item):
                 cand_bad_indices.add(idx)
 
@@ -323,8 +369,14 @@ def extract_one(model: str, image_path: Path, outdir: Path) -> OrderForm:
             row_log_lines.append(f"{item_name} | {stub.type} -> {raw_line}")
             items.append(OrderItem(item=item_name, type=stub.type, quantities=quantities))
     else:
+        # grid.py found no usable row candidates for the WHOLE image (not
+        # just one bad row within an otherwise-good grid) -- the caller's
+        # own strongest signal that this is a genuinely free-form page
+        # with no shared header row at all, not just a hard grid-based
+        # form. See ROW_PROMPT_TEMPLATE_FREEFORM's docstring for why this
+        # must only fire here, not on the per-row fallback above.
         for stub in meta.items:
-            quantities, raw_line = stage_b_row(model, image_bytes, stub.item, stub.type, meta.size_headers, cropped=False)
+            quantities, raw_line = stage_b_row(model, image_bytes, stub.item, stub.type, meta.size_headers, cropped=False, freeform=True)
             row_log_lines.append(f"{stub.item} | {stub.type} -> {raw_line}")
             items.append(OrderItem(item=stub.item, type=stub.type, quantities=quantities))
 

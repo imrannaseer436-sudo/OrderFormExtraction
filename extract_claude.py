@@ -192,6 +192,19 @@ KNOWN_STYLE_CODES = {"IE", "OE", "RN", "RNS"}
 _TRAILING_CODE_RE = re.compile(r"^(?P<name>.+?)\s+(?P<code>[A-Z]{2,4})$")
 _DATE_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{2,4}")
 
+# A real size header on these forms is always a plain number ("45", "105")
+# -- never a running-total column. Confirmed real, independent of
+# schema.py's own FormMeta.size_headers validator (2026-09-01): a live
+# call here returned `size_headers` with the form's own trailing "Total
+# Dozen" column included as a 14th entry ("Total"), which then corrupted
+# _hybrid_ocr_quantities' column-spacing math downstream the same way it
+# did for the other pipeline -- confirmed by inspecting the raw stageA
+# output directly, not assumed. Unlike schema.py's version, this doesn't
+# need a letter-size allowance: a letter-coded size here is reported
+# per-cell in QuantityPair.size (see the LETTER SIZES prompt rule), never
+# as an entry in the shared size_headers list itself.
+_NUMERIC_HEADER_RE = re.compile(r"^\d{1,3}$")
+
 
 SYSTEM_PROMPT_TEMPLATE = """You are transcribing a garment order form photo into structured data. These \
 forms mix handwriting, printed text, and typed text, with a dense size/quantity table. Reproduce \
@@ -242,9 +255,12 @@ item="MYNA", type="OE". Never mistake a Style column value for the item name.
 SIZE HEADERS: GRID LAYOUT -- report every size column header across the top of the shared table, \
 left to right, exactly as printed, in size_headers. Many grid forms print a SECOND row of numbers \
 just beneath the real headers (an age/chest-size equivalent) -- that second row is a column label, \
-never put it in size_headers, and never read quantities from it for any item. FREE-FORM LAYOUT -- \
-there is no single shared header row to report; leave size_headers as an empty list rather than \
-forcing one item's local sizes into a page-wide list that doesn't really exist on this page.
+never put it in size_headers, and never read quantities from it for any item. Do NOT include a \
+trailing running-total column (e.g. "Total", "Total Dozen", "Grand Total") in size_headers either -- \
+that is a summary column, not a size, even though it sits at the end of the same header row. \
+FREE-FORM LAYOUT -- there is no single shared header row to report; leave size_headers as an empty \
+list rather than forcing one item's local sizes into a page-wide list that doesn't really exist on \
+this page.
 
 QUANTITIES: report every size/quantity pair exactly as written. GRID LAYOUT -- go through the size \
 columns left to right under the shared header row for each item's row. FREE-FORM LAYOUT -- read the \
@@ -380,6 +396,11 @@ class ExtractedForm(BaseModel):
             return v
         m = _DATE_RE.search(v)
         return m.group(0) if m else v
+
+    @field_validator("size_headers")
+    @classmethod
+    def _drop_non_numeric_headers(cls, v: List[str]) -> List[str]:
+        return [h for h in v if _NUMERIC_HEADER_RE.match(h)]
 
     @model_validator(mode="after")
     def _forward_fill_ditto_item_names(self) -> "ExtractedForm":
@@ -1233,10 +1254,10 @@ def _to_order_form(extracted: ExtractedForm, source_name: str) -> OrderForm:
 
 def _write_debug_artifacts(outdir: Path, stem: str, extracted: ExtractedForm, recount_flags: list[dict] | None = None) -> None:
     (outdir / f"{stem}.raw.json").write_text(
-        json.dumps(extracted.model_dump(mode="json"), indent=2, ensure_ascii=False)
+        json.dumps(extracted.model_dump(mode="json"), indent=2, ensure_ascii=False), encoding="utf-8"
     )
     (outdir / f"{stem}.stageA.json").write_text(
-        json.dumps({"seller_name": extracted.seller_name, "size_headers": extracted.size_headers}, indent=2, ensure_ascii=False)
+        json.dumps({"seller_name": extracted.seller_name, "size_headers": extracted.size_headers}, indent=2, ensure_ascii=False), encoding="utf-8"
     )
     if recount_flags is not None:
         # One entry per item, aligned by index with the final OrderForm's
@@ -1246,7 +1267,7 @@ def _write_debug_artifacts(outdir: Path, stem: str, extracted: ExtractedForm, re
         # that signal buried in a paragraph of free text at the top of the
         # review page.
         (outdir / f"{stem}.recount_flags.json").write_text(
-            json.dumps(recount_flags, indent=2, ensure_ascii=False)
+            json.dumps(recount_flags, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
 

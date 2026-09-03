@@ -6,6 +6,13 @@
 __pycache__/
 *.pyc
 
+# pipeline output -- generated per run, not source. This project's history is
+# full of one-off "extracted_*_test/" comparison dirs that got committed by
+# accident; this pattern keeps that from recurring. Commit a specific output
+# folder deliberately (git add -f) if you have a real reason to check one in.
+extracted*/
+usage_log*.csv
+
 # editor/OS
 .DS_Store
 Thumbs.db

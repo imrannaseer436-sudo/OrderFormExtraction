@@ -50,6 +50,12 @@ item must be exactly "Trend Trunk" and type must be "IE". Do NOT write "Trend Tr
 name. The item name is exactly what's written in the Particulars column, nothing appended from \
 another column.
 
+D) WRAPPED LINES ON FREE-FORM PAGES. Some order forms have no printed grid at all — just handwritten \
+item names with their own size:quantity list written directly below or beside each one, with no \
+shared header row across the page. On a page like this, a line of size:quantity pairs (or a plain \
+list of numbers) that has NO new item name or bullet point directly above it is a CONTINUATION of \
+the item above, not a new item — do not create a separate item for it.
+
 Extract:
 - seller_name, party_name, party_city, order_no.
 - order_date: normalize to DD/MM/YYYY, assuming 20xx for 2-digit years. This field must contain \
@@ -57,10 +63,16 @@ ONLY the final normalized date, e.g. "30/03/2026" — never any explanation, wor
 as-written text alongside it.
 - size_headers: every size column header across the top of the table, left to right, exactly as \
 printed. Ignore any second header row underneath giving an age/chest equivalent — only the primary \
-size code goes here.
+size code goes here. Do NOT include a trailing running-total column (e.g. "Total", "Total Dozen", \
+"Grand Total") — that is a summary column, not a size. If this page has NO single shared header row \
+at all (e.g. a free-form handwritten page where each item has its own local list of sizes written \
+directly with it, per rule D), leave size_headers as an empty list rather than guessing one.
 - items: every single product/article row, top to bottom, with its item name (ditto marks expanded \
-per rule B, style code excluded per rule C) and style code if there's a separate Style column. Do \
-NOT include quantities here.
+per rule B, style code excluded per rule C) and style code if there's a separate Style column. A \
+style code is always alphabetic (e.g. RN, RNS, OE, IE), never a number — the second header row's \
+age/chest-equivalent numbers sit close to the Style column on some forms and must NEVER be read as \
+that row's style code. If the Style column is blank or too faint/illegible to read for a row, leave \
+type as an empty string rather than guessing a nearby number. Do NOT include quantities here.
 - notes: any page-level handwritten notes (e.g. "Old Rate Supply Only"), and anything illegible/\
 unusual not tied to a specific row's quantities."""
 
@@ -86,6 +98,39 @@ For THIS ROW ONLY, go through those headers one at a time, left to right, and st
 written directly beneath each one, on this item's line. Many rows are blank for the first several \
 columns and only have numbers starting partway across — go column by column and don't skip any, so \
 you don't lose your place.
+
+{format_instructions}"""
+
+
+# Used ONLY when the WHOLE image has no printed grid at all (grid.py found
+# zero row candidates for the entire page) -- e.g. a free-form handwritten
+# notebook page where each item has its own local size:quantity list
+# written directly with it, not lined up under one shared row of column
+# headers. Deliberately a SEPARATE template from ROW_PROMPT_TEMPLATE_FULL,
+# not a conditional clause added to it -- confirmed by a real regression
+# (2026-09-01): adding a "maybe there's no shared header, ignore the list
+# above" escape hatch to the shared per-row-fallback template made an
+# ALREADY-uncertain row (one already flagged as a row-alignment failure on
+# an otherwise-normal grid form) measurably worse -- the model took the
+# escape hatch on a form that DOES have a real shared header row, and
+# hallucinated a full-range reading instead. A model weak enough to need
+# that escape hatch is also too weak to reliably judge when it applies;
+# only route here when the CALLER already knows (from grid.py finding no
+# candidates at all) that no shared header row exists.
+ROW_PROMPT_TEMPLATE_FREEFORM = """Look at this order form image. This page has NO single shared \
+header row across the top of a table -- it's a free-form handwritten page where each item has its \
+own local size:quantity list written directly with it (e.g. sizes on one line and their quantities \
+on the line below, or size/quantity pairs written inline like "60/10, 65/15").
+
+Find this item on the page:
+
+    ITEM: {item}
+    STYLE: {style}
+
+Read whatever size:quantity pairs are written directly with THIS item -- not with any other item on \
+the page. If this item's own list continues onto a second line with no new item name above it, \
+include that continuation too. Read the item's FULL local list even if it runs longer than a \
+typical range for this page — there's no implied ceiling on how many sizes one item can have.
 
 {format_instructions}"""
 
@@ -132,10 +177,18 @@ def build_stage_a_prompt() -> str:
     return STAGE_A_PROMPT
 
 
-def build_row_prompt(item: str, style: str, headers: list[str], cropped: bool = False) -> str:
-    example = ", ".join(f"{h}:value" for h in headers)
+def build_row_prompt(item: str, style: str, headers: list[str], cropped: bool = False, freeform: bool = False) -> str:
+    # On a free-form page there's no real headers list to build an example
+    # from (see ROW_PROMPT_TEMPLATE_FREEFORM) -- a generic illustrative
+    # example still shows the model the expected size:value output shape.
+    example = ", ".join(f"{h}:value" for h in headers) if headers else "45:10, 50:15, 55:blank"
     format_instructions = FORMAT_INSTRUCTIONS.format(example=example)
-    template = ROW_PROMPT_TEMPLATE_CROP if cropped else ROW_PROMPT_TEMPLATE_FULL
+    if freeform:
+        template = ROW_PROMPT_TEMPLATE_FREEFORM
+    elif cropped:
+        template = ROW_PROMPT_TEMPLATE_CROP
+    else:
+        template = ROW_PROMPT_TEMPLATE_FULL
     return template.format(item=item, style=style or "(none)", headers=", ".join(headers), format_instructions=format_instructions)
 
 

@@ -122,6 +122,15 @@ def _friendly_recount_summary(flag: dict) -> str:
     reviewer actually needs at a glance."""
     sizes = ", ".join(_sorted_sizes(flag.get("sizes", [])))
     status = flag.get("status")
+    note = flag.get("note", "")
+    # Flags from extract_ollama_cloud.py's hybrid-OCR total-mismatch and
+    # catalog checks (2026-08-22) already write a specific, plain-language
+    # reason into their own note text -- showing it directly is more
+    # accurate than the recount-pass phrasing below, which describes a
+    # DIFFERENT mechanism (two independent VLM reads disagreeing) these
+    # flags never go through.
+    if note.startswith("Hybrid OCR+VLM:") or note.startswith("Catalog check:"):
+        return f"⚠️ {html.escape(note)}"
     if status == "unresolved":
         return f"⚠️ Please check sizes {sizes} against the photo — two automatic checks disagreed and we couldn't tell which is right."
     if status == "resolved":
@@ -382,6 +391,11 @@ def render_html(order_form: dict, stage_a: dict | None, headers: list[str], imag
     background: var(--panel);
     padding: 1rem 1.25rem 2rem;
     overflow: auto;
+    max-height: calc(100vh - 54px); /* bounds this pane so it scrolls
+      WITHIN itself (like .image-pane already does) instead of growing
+      past the viewport and letting the whole PAGE scroll -- without this,
+      table.grid's sticky thead has no real scrolling ancestor to stick
+      within and the effect is easy to miss. */
   }}
 
   .order-meta {{
@@ -432,7 +446,10 @@ def render_html(order_form: dict, stage_a: dict | None, headers: list[str], imag
     font-weight: 600;
     padding: 0.5rem 0.4rem;
     position: sticky;
-    top: 0;
+    top: 0; /* sticks to the top of .data-pane's OWN scroll box (now that
+               .data-pane has a bounded max-height + overflow:auto above),
+               not the page -- .data-pane's own top edge already sits
+               below header.topbar, so no extra offset is needed here. */
     z-index: 10;
   }}
   table.grid thead th.item-col, table.grid thead th.style-col {{ text-align: left; }}
@@ -563,11 +580,11 @@ def render_html(order_form: dict, stage_a: dict | None, headers: list[str], imag
     </div>
     <footer class="note">
       Rows highlighted in amber have no quantities at all — check these first.
-      Individual cells with a colored border are flagged by the size/quantity recount pass — hover a cell for why:
-      <span style="color:var(--flag-unresolved);font-weight:600;">red</span> = main and recount disagreed and couldn't be resolved automatically (most important to check),
-      <span style="color:var(--flag-resolved);font-weight:600;">amber</span> = disagreed but auto-resolved via Total Dozen/catalog (worth a glance),
+      Individual cells with a colored border are flagged as doubtful — hover a cell for the specific reason:
+      <span style="color:var(--flag-unresolved);font-weight:600;">red</span> = a strong, specific problem (row doesn't sum to its own printed total, or two independent reads disagreed with no automatic resolution) — most important to check,
+      <span style="color:var(--flag-resolved);font-weight:600;">amber</span> = a likely fix was found automatically (a probable column shift, or a disagreement resolved via Total Dozen/catalog) — worth a glance,
       <span style="color:var(--flag-corrected);font-weight:600;">purple</span> = both reads agreed but were auto-corrected against the product catalog (shared-bias check),
-      <span style="color:var(--flag-unverified);font-weight:600;">gray</span> = recount couldn't independently verify this row at all.
+      <span style="color:var(--flag-unverified);font-weight:600;">gray</span> = a weaker signal (sizes outside the matched product's catalog range, or a row recount couldn't independently verify) — worth a glance.
       Each row also has ◀/▶ buttons to shift every filled cell in that row one size column left/right (for a column-drift misread), and a "Fix" button when the catalog check already found a specific likely offset.
       Edit any cell directly, then use "Export corrected JSON" to download the corrected file.
     </footer>
