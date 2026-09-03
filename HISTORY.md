@@ -5818,3 +5818,101 @@ directly at `MYNA`/IE's `85` column to settle it, and separately correct
 `extracted_ollama_cloud_mistral_lastrun/sample 5-scanned.json`'s `MYNA`/OE
 `100` value from `3` to `13` to match the already-established truth --
 neither has been done yet, both flagged here so they aren't lost.
+
+## Production hardening pass: default flags flipped, files cleaned up,
+## hybrid OCR sped up — 2026-09-03
+
+Two follow-ups to the production cutover, both requested directly by the
+user ("prepare for production", then "find and eliminate unnecessary
+steps... to save time"):
+
+**Repo cleanup + production defaults** (see the new, concise `CLAUDE.md`
+for the current state -- not repeated here): deleted every one-off
+comparison/scratch output directory (tracked and untracked), consolidated
+`requirements.txt`, archived this entire file out of the old bloated
+`CLAUDE.md`. `DEFAULT_MODEL` changed to `mistral-large-3:675b`;
+`--hybrid-quantities` flipped from opt-in to on-by-default;
+`--recount` flipped from on-by-default to opt-in (matching the
+reliability caveat this file already documented for it, which the code's
+actual default had never honored). Verified via live runs with zero CLI
+flags on `sample 5-scanned.jpg` and `sample 13-scanned.jpg`: exact match
+to established cell counts/checksums.
+
+**`_hybrid_ocr_quantities`'s faint-digit recovery pass sped up 1.7x-4x,
+same behavior, confirmed via controlled A/B.** Audited the pipeline for
+wasted work per the user's request. The one real, measured inefficiency
+found: the low-confidence "faint digit misread as a CJK character"
+recovery pass (built 2026-08-20, see that section above) ran a full
+SECOND whole-page CLAHE-enhance + OCR pass unconditionally on every
+image -- real, measured cost ~2-4s (get_ocr()+prep ~7.5s is a separate,
+one-time-per-process cost, not part of this). Direct timing across this
+project's 3 core regression forms: `sample 12-scanned.jpg` (1 real value
+recovered), `sample 5-scanned.jpg` and `sample 13-scanned.jpg` (0 new
+candidates each) -- meaning 2 of 3 forms paid the full cost of a second
+whole-page OCR pass for zero benefit.
+
+Root cause investigated before touching anything: the one real recovery
+case (`sample 12-scanned.jpg`'s "ESSA Premium" row) was already DETECTED
+by the primary OCR pass (a real bounding box existed at that location) --
+just misrecognized as the CJK character '二' instead of the digit '3'.
+Since the failure is a RECOGNITION problem, not a DETECTION problem, a
+full-page re-scan was never actually necessary to fix it -- only that
+one already-known ambiguous region needed a second look.
+
+**First redesign attempt (CLAHE a small crop of just the ambiguous
+region, then re-OCR it) failed, confirmed by direct testing, before
+being shipped.** The exact box that reads as '3' (score 0.301) when
+CLAHE is applied to the WHOLE page reads as a garbled '了' (a different
+wrong CJK character) when CLAHE is applied to a small crop of just that
+region in isolation. Root cause: CLAHE computes LOCAL contrast statistics
+via an 8x8 tile grid -- on a full page each tile covers a large,
+representative area (~200-400px), but on a small crop the same 8x8 grid
+divides it into ~10px tiles, too small to compute meaningful contrast
+statistics. Confirmed directly by comparing the whole-page CLAHE result's
+own box/score for this exact character against multiple small-crop-CLAHE
+attempts at different padding sizes.
+
+**Working design, confirmed via controlled A/B:** CLAHE the whole page
+ONCE (a real but comparatively cheap ~0.5-0.9s, unavoidable for correct
+local-contrast statistics), then run the EXPENSIVE step (OCR detection +
+recognition) only on small, tightly-padded crops of the already-enhanced
+page, one per low-confidence detection the primary pass already flagged
+in the data band. A second bug found and fixed before shipping: an
+initially-generous crop padding (~1.5x box height) bridged into the NEXT
+row's own digits on this dense form (~27px row spacing), causing the
+crop to match the wrong row's value -- fixed by tightening padding to
+~0.2x box height / ~0.4x box width, plus picking whichever detection in
+the crop sits nearest the original ambiguous box's own position (not
+just the highest-scoring digit found anywhere in the crop, since even a
+tight crop can contain more than one detection).
+
+**Verification, not just reasoning:** a controlled A/B (old whole-page-
+rescan code vs. new targeted-crop code, both run against the SAME saved
+model output as input, so the VLM's own run-to-run non-determinism can't
+confound the comparison) confirmed byte-identical output on all 3 core
+regression forms, with the hybrid-OCR step 1.7x (`sample 12-scanned`) to
+4x (`sample 5-scanned`) faster. Also re-verified with fresh live calls on
+all 3 forms plus `sample 3-scanned.jpg` (the densest form, exercising
+struck-out-row and letter-size handling too) -- all matched established
+cell counts/checksums. `sample 3-scanned.jpg`'s `MM K4532` letter-size
+row still didn't resolve to catalog sizes on this particular live draw --
+confirmed via the same controlled-input A/B that this is the
+already-documented, pre-existing `letter_sizes` unreliability (see the
+2026-09-02 "does NOT reliably fire on this row" section above), not
+something this change caused.
+
+**Not pursued further:** other candidate "unnecessary steps" were
+considered and ruled out during this audit, not silently ignored --
+`get_ocr()` is already a cached singleton (no repeated model reloads);
+`grid.py`'s CV row-boundary detection (`iter_row_boundary_candidates_auto`)
+only runs on the recount path, already dead by default after the flag
+flip above; the brandlist catalog and buyer-table DB queries are already
+`@lru_cache`'d to once per process; a whole-table gate on the CLAHE pass
+(skip it entirely based on a cheap pre-check) was considered and rejected
+specifically because the obvious cheap signal -- each item's own
+`row_top_frac`/`row_bottom_frac` -- is unreliable on at least one core
+form (`sample 13-scanned.jpg`, where these come back `0.0` for every
+item) as this file has documented extensively elsewhere; building a
+correct gate would have required duplicating the row-clustering logic
+itself, a bigger, riskier change than the targeted-crop fix that was
+shipped instead.
