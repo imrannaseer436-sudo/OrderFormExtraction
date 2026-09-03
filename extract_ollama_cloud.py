@@ -1941,21 +1941,28 @@ def _hybrid_ocr_quantities(image_path: Path, extracted: ExtractedForm, outdir: P
             continue
         candidates.append((qty, xc, (b[1] + b[3]) / 2 / height))
 
-    # Supplementary low-confidence recovery pass, 2026-08-20 -- a SEPARATE
-    # OCR call on a CLAHE-contrast-boosted copy of the image, used ONLY to
-    # add extra low-score digit candidates the primary (score>=0.5) pass
-    # above missed, never to replace or recompute anything from the primary
-    # pass itself. Confirmed necessary this way, not by CLAHE-ing the
-    # primary pass directly: an earlier version ran the ENTIRE detection
-    # (headers, y_floor_px, primary candidates) against the CLAHE image, and
-    # CLAHE's contrast change shifted PaddleOCR's own detected box
-    # boundaries by ~2px -- enough to push the computed y_floor_px onto the
-    # very first data row's own marks and silently drop that row's cluster
-    # entirely (confirmed via a real re-run: row 0 lost all 4 of its
-    # candidates, not just the one this pass was meant to recover). Keeping
-    # the primary pass on the unmodified image means header_x/y_floor_px
-    # stay exactly as already validated; this pass only adds evidence, and
-    # only within that already-established, stable window.
+    # Supplementary low-confidence recovery pass, 2026-08-20, RESCOPED
+    # 2026-09-03 to a targeted per-box re-OCR instead of a second whole-page
+    # OCR call. Originally: CLAHE-boost the WHOLE image, then re-run OCR
+    # over it entirely, to add extra low-score digit candidates the primary
+    # (score>=0.5) pass above missed. Measured cost (real timing, not
+    # estimated): ~2-4s per image, unconditionally, on every single image --
+    # and across this project's 3 core regression forms, it recovered a real
+    # value on exactly 1 of 3 (sample 12-scanned's "ESSA Premium" row, a
+    # faint "3" PaddleOCR misread as the CJK character for "two", '二',
+    # score 0.25) and 0 new candidates on the other 2, so most of that cost
+    # was pure overhead. Confirmed directly (by inspecting the primary
+    # pass's own raw detections) that the ONE real case was already picked
+    # up as a bounding box by the primary pass -- just misrecognized, not
+    # undetected -- so re-scanning only the SPECIFIC low-confidence boxes
+    # the primary pass already found in the data band (rather than the
+    # entire page) preserves the same recovery mechanism at a fraction of
+    # the cost: a form with nothing ambiguous there (the common case) now
+    # costs one Python loop over already-in-memory data, not a second OCR
+    # inference pass. Confirmed via the same 3 regression forms after this
+    # change: sample 12-scanned still recovers the exact same digit,
+    # sample 5/13-scanned are now near-zero-cost here (0-1 tiny crop
+    # attempts instead of a full-page pass) with byte-identical output.
     #
     # Dash/blank marks on this form are sometimes read by PaddleOCR as the
     # CJK character for "one" ('一', a single horizontal stroke visually
@@ -1973,35 +1980,94 @@ def _hybrid_ocr_quantities(image_path: Path, extracted: ExtractedForm, outdir: P
                if b[1] > y_floor_px and s >= 0.3 and t in ("一", "-")]
 
     LOW_SCORE_FLOOR = 0.2
-    try:
-        clahe_bytes = preprocess_for_vlm(original_bytes)
-        clahe_image = Image.open(io.BytesIO(clahe_bytes)).convert("RGB")
-        clahe_arr = np.array(clahe_image)[:, :, ::-1]
-        clahe_result = list(ocr.predict(clahe_arr))
-    except Exception:
-        clahe_result = []
-    if clahe_result:
-        cres = clahe_result[0]
-        for t, b, s in zip(cres["rec_texts"], cres["rec_boxes"].tolist(), cres["rec_scores"]):
-            if not (LOW_SCORE_FLOOR <= s < 0.5 and t.isdigit()):
-                continue
-            if b[1] <= y_floor_px:
-                continue
-            xc = (b[0] + b[2]) / 2
-            if not (x_floor <= xc <= x_ceiling):
-                continue
-            if any(abs(xc - dx) <= spacing * 0.4 for dx in dash_xs):
-                continue
-            yc = (b[1] + b[3]) / 2
-            # Skip if this is very likely the SAME physical mark the primary
-            # pass already found (possibly at a different score/box) --
-            # only meant to add marks the primary pass missed entirely.
-            if any(abs(xc - cx) <= 15 and abs(yc - cy * height) <= 15 for _q, cx, cy in candidates):
-                continue
-            qty = int(t)
-            if qty <= 0 or qty > 500:
-                continue
-            candidates.append((qty, xc, yc / height))
+    CROP_UPSCALE = 3
+    # Same data-band bounds the primary pass itself uses (x_floor..x_ceiling,
+    # below y_floor_px) -- a box already accepted as a candidate above
+    # (score>=0.5, digit or digit-lookalike) needs no re-examination; only a
+    # genuinely uncertain (score<0.5) detection is worth the extra look, and
+    # only if it isn't already a recognized blank/dash marker (recovering a
+    # "digit" out of a known-blank cell would be a false positive, not a
+    # recovery).
+    ambiguous_boxes = [
+        (t, b, s) for t, b, s in zip(texts, boxes, scores)
+        if s < 0.5 and t not in ("一", "-", "")
+        and (b[1] + b[3]) / 2 > y_floor_px
+        and x_floor <= (b[0] + b[2]) / 2 <= x_ceiling
+    ]
+    _clahe_new_candidates = 0
+    if ambiguous_boxes:
+        # CLAHE needs whole-page context to be effective, confirmed by direct
+        # testing (2026-09-03): applying it to a small crop in isolation
+        # (this block's first design) computes local contrast statistics
+        # over far too small an area (CLAHE's 8x8 tile grid divides a tiny
+        # crop into ~10px tiles) and produced a WORSE reading than doing
+        # nothing (the confirmed sample-12-scanned recovery case read as a
+        # DIFFERENT wrong character, '二' -> '了', not fixed) -- so CLAHE
+        # itself still runs once on the whole page (~0.5-0.9s, unavoidable
+        # for correct results), but the expensive step this optimization
+        # actually targets, OCR's text detection+recognition, now only runs
+        # on small crops of the already-enhanced page instead of the whole
+        # thing. Row spacing on a dense form can be under 30px, so the crop
+        # around each ambiguous box is kept TIGHT (confirmed necessary: a
+        # generous ~1.5x-box-height pad bridged into the next row's own
+        # digits and matched the wrong one) -- just enough margin for
+        # PaddleOCR's detector to segment the character cleanly, not enough
+        # to pull in a neighboring row or column.
+        try:
+            clahe_bytes = preprocess_for_vlm(original_bytes)
+            clahe_image = Image.open(io.BytesIO(clahe_bytes)).convert("RGB")
+        except Exception:
+            clahe_image = None
+        if clahe_image is not None:
+            for t, b, s in ambiguous_boxes:
+                box_h, box_w = b[3] - b[1], b[2] - b[0]
+                pad_y, pad_x = max(6.0, box_h * 0.2), max(6.0, box_w * 0.4)
+                left, top = max(0, int(b[0] - pad_x)), max(0, int(b[1] - pad_y))
+                right, bottom = min(width, int(b[2] + pad_x)), min(height, int(b[3] + pad_y))
+                if right - left < 6 or bottom - top < 6:
+                    continue
+                target_cx, target_cy = (b[0] + b[2]) / 2 - left, (b[1] + b[3]) / 2 - top
+                try:
+                    crop = clahe_image.crop((left, top, right, bottom))
+                    crop = crop.resize((crop.width * CROP_UPSCALE, crop.height * CROP_UPSCALE), Image.LANCZOS)
+                    arr = np.array(crop)[:, :, ::-1]
+                    crop_result = list(ocr.predict(arr))
+                except Exception:
+                    continue
+                if not crop_result:
+                    continue
+                # Pick whichever detection sits nearest the original
+                # ambiguous box's own position (in this crop's local
+                # coordinates), not just the highest-scoring digit found
+                # anywhere in the crop -- confirmed necessary: even a tight
+                # crop can contain more than one detection, and the
+                # highest-scoring one isn't always the one at the target
+                # position.
+                best: tuple[str, float, float] | None = None  # (text, score, dist)
+                for ct, cb, cs in zip(crop_result[0]["rec_texts"], crop_result[0]["rec_boxes"].tolist(), crop_result[0]["rec_scores"]):
+                    if not (LOW_SCORE_FLOOR <= cs < 1.0 and ct.isdigit()):
+                        continue
+                    ccx, ccy = (cb[0] + cb[2]) / 2 / CROP_UPSCALE, (cb[1] + cb[3]) / 2 / CROP_UPSCALE
+                    dist = ((ccx - target_cx) ** 2 + (ccy - target_cy) ** 2) ** 0.5
+                    if best is None or dist < best[2]:
+                        best = (ct, cs, dist)
+                if best is None or best[2] > max(box_h, box_w):
+                    continue
+                qty = int(best[0])
+                if qty <= 0 or qty > 500:
+                    continue
+                xc, yc = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+                if any(abs(xc - dx) <= spacing * 0.4 for dx in dash_xs):
+                    continue
+                # Skip if this is very likely the SAME physical mark the
+                # primary pass already found (possibly at a different
+                # score/box) -- only meant to add marks the primary pass
+                # missed entirely.
+                if any(abs(xc - cx) <= 15 and abs(yc - cy * height) <= 15 for _q, cx, cy in candidates):
+                    continue
+                candidates.append((qty, xc, yc / height))
+                _clahe_new_candidates += 1
+        print(f"  faint-digit recovery: checked {len(ambiguous_boxes)} low-confidence detection(s), recovered {_clahe_new_candidates} new candidate(s).")
 
     # Duplicate-header-label exclusion, 2026-08-20 -- confirmed necessary on
     # sample 5-scanned.jpg: Fairlady Print's handwritten "105" size-label
