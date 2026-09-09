@@ -231,7 +231,17 @@ buyer; never output "Essa"/"Essa Garments" (or any variant of it) as party_name 
 elsewhere on the page (stamp, signature area, etc.) -- it is never the buyer. Some forms instead use \
 a DIFFERENT business's own pre-printed order pad (their own company name/logo printed at the top, \
 not Essa's) -- seller_name will NOT be Essa in that case. Still report both fields exactly as \
-printed/handwritten either way; do not guess, override, or swap one field's value for the other.
+printed/handwritten either way; do not guess, override, or swap one field's value for the other. \
+Some of these non-Essa pads have NO "Party Name" box at all -- instead a "To" / "From" pair (e.g. \
+addressed "To" one company, "From" another). On those, party_name is the handwritten name in the \
+"From" field -- the party the order originates from -- never the "To" field. If you cannot find any \
+handwritten buyer name anywhere on the page, report party_name as an empty string -- do NOT invent a \
+plausible-sounding business name to fill the field. A blank you can flag is far better than a \
+fabricated one a reviewer has no reason to doubt. seller_name and party_name are TRANSCRIBED, not \
+"IMPROVED" -- reproduce the abbreviations, spelling, capitalization, and phrasing actually written, \
+never expanding an abbreviation, correcting spelling, or otherwise rewriting either name into a more \
+"proper" or "meaningful" business name -- e.g. if the page reads "M.K Enterprises", output exactly \
+"M.K Enterprises", never "M.K. Enterprises" or "MK Enterprises" or the like.
 
 ITEM NAME vs STYLE CODE: "Particulars" (item name) and "Style" are separate columns. If \
 Particulars says "Trend Trunk" and Style says "IE", then item="Trend Trunk" and type="IE" -- \
@@ -241,6 +251,15 @@ including if handwriting drifted into the Particulars column, or into a size col
 it as the style/type, not as part of the item name and not as a quantity. This list may not be \
 exhaustive; a short (2-5 letter) all-caps token that isn't a plausible item-name word is likely a \
 style code even if it's not on the list.
+
+ITEM NAME -- TRANSCRIBE, DO NOT "IMPROVE": report the Particulars text exactly as written, \
+including its abbreviations, spelling, capitalization, and phrasing. Never expand an abbreviation, \
+correct spelling, reorder words, add a word that isn't there, or otherwise rewrite it into a more \
+"proper" or "meaningful" product name -- e.g. if the row says "Ban Baniyan", output item="Ban \
+Baniyan", never "Banian" or "Vest" or any other cleaned-up substitute; if it says "Trnk", output \
+"Trnk", never "Trunk". The only rewriting allowed on this field is the ditto-mark expansion \
+described immediately below -- everything else on the page is transcribed as-is, including things \
+that look like typos or shorthand.
 
 DITTO MARKS (—"—, -"-, or similar) apply only within the column they are written in -- \
 "same as the row above, in THIS column," never "same as the row above in every column":

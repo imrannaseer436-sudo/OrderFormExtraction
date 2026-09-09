@@ -109,6 +109,8 @@ from PIL import Image, ImageOps
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 import brandlist_match
+import template_learning
+from chandra_parser import CHANDRA_MODEL  # constant only -- call_chandra/parse_chandra_output are imported lazily in extract_one(), see there
 from grid import iter_row_boundary_candidates_auto
 from ocr_cell_read import get_ocr, item_alignment_ok, ocr_row, _try_digit_correct, _monotonic_assign, _split_merged_qty_token
 from preprocess_for_vlm import preprocess_for_vlm
@@ -154,6 +156,28 @@ OLLAMA_CLOUD_HOST = "https://ollama.com"
 MAX_TOKENS = 32000
 RECOUNT_ROW_MAX_TOKENS = 8000
 RECOUNT_MAX_TOKENS = 32000  # whole-table fallback call only, mirrors extract_claude.py
+
+# Confirmed necessary 2026-09-08: the `ollama` package's Client defaults to
+# NO request timeout at all (`httpx.Timeout(timeout=None)`, confirmed by
+# direct inspection -- `ollama.Client()._client.timeout`) unless one is
+# passed at construction. A genuinely stuck call (the local Ollama service
+# wedged, GPU contention between this pipeline's own local models --
+# chandra and LightOnOCR-2 share the same GPU, an explicitly documented
+# untested concern -- or a dropped connection) would then block the calling
+# thread FOREVER: no exception, no return, so none of this file's existing
+# try/except error handling ever runs. In the review app specifically, that
+# thread is the single-worker `_EXECUTOR` (app/pipeline.py) -- a hang there
+# leaves a page's `status` stuck at "running" forever with nothing for the
+# UI to show an error for, and blocks every other page/session queued
+# behind it too. Applied to every `ollama.Client()` this file (and
+# hybrid_quantities_lighton.py) constructs, both local and cloud, so a
+# stuck call surfaces as a real, caught exception (same as any other
+# call failure already handled) instead of hanging silently. 300s is
+# generous headroom above every real call time measured on this
+# project's forms so far (worst case ~130s, a dense form's chandra main
+# call plus LightOnOCR-2 hybrid combined) -- meant to catch a genuine
+# hang, not a slow-but-working call.
+OLLAMA_REQUEST_TIMEOUT = 300.0
 
 # qwen3.5:397b (and possibly other Cloud models) run extended internal
 # "thinking" by default even at temperature=0, confirmed by direct testing
@@ -531,7 +555,16 @@ that second line in full and all the way to its own right edge, even if the resu
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 
-def get_client() -> ollama.Client:
+def get_client(model: str = DEFAULT_MODEL) -> ollama.Client:
+    """A chandra model runs on the LOCAL Ollama service (see
+    chandra_parser.py), not Ollama Cloud -- no API key needed, and this
+    project's other local models (LightOnOCR-2, qwen2.5vl) already use
+    the same default `ollama.Client()` (localhost:11434) unauthenticated.
+    Every other model still goes through Ollama Cloud as before.
+    `timeout=OLLAMA_REQUEST_TIMEOUT` on both -- see that constant's own
+    comment for why this isn't optional."""
+    if "chandra" in model.lower():
+        return ollama.Client(timeout=OLLAMA_REQUEST_TIMEOUT)
     api_key = os.environ.get("OLLAMA_API_KEY")
     if not api_key:
         print(
@@ -541,7 +574,7 @@ def get_client() -> ollama.Client:
             file=sys.stderr,
         )
         sys.exit(1)
-    return ollama.Client(host=OLLAMA_CLOUD_HOST, headers={"Authorization": f"Bearer {api_key}"})
+    return ollama.Client(host=OLLAMA_CLOUD_HOST, headers={"Authorization": f"Bearer {api_key}"}, timeout=OLLAMA_REQUEST_TIMEOUT)
 
 
 def _strip_json_fences(text: str) -> str:
@@ -995,6 +1028,14 @@ def _prepare_image_for_mistral(image_path: Path) -> tuple[bytes, str]:
 # needed to succeed -- see _rescale_for_ocr's docstring for why the two
 # can't just share one image.
 _OCR_TARGET_WIDTH = 3800
+
+# Fraction of the VLM's own filled-cell count that the OCR pass must actually
+# detect before its reading is allowed to correct anything. Below this, the
+# whole hybrid stage stands down for the page -- see the long comment at the
+# guard's own site in _hybrid_ocr_quantities for the measurements behind it.
+# Healthy pages in this project's test set land at 102-108%; the one page that
+# defeats OCR detection lands at 22%.
+MIN_OCR_COVERAGE = 0.60
 
 
 def _rescale_for_ocr(original_bytes: bytes, skew: float, target_width: int = _OCR_TARGET_WIDTH) -> Image.Image:
@@ -2360,6 +2401,57 @@ def _hybrid_ocr_quantities(image_path: Path, extracted: ExtractedForm, outdir: P
         except Exception:
             pass  # debug-only, never let this block the real extraction
 
+    # ---- detection-coverage guard -------------------------------------
+    #
+    # Everything below assumes OCR actually SAW this page's handwriting, and
+    # that a disagreement with the VLM therefore means the VLM drifted. On a
+    # page where PaddleOCR simply can't detect the marks, that assumption
+    # inverts: _reconcile_hybrid_with_vlm keeps the OCR reading whenever the
+    # two disagree on which columns are filled, so near-total blindness gets
+    # treated as near-total authority and wipes out a good VLM reading.
+    #
+    # Confirmed on sample 4-scanned.jpg (2026-09-03), a form whose cells are
+    # almost all a single "1" -- a lone vertical stroke, the hardest possible
+    # glyph for a text DETECTOR (not recognizer) to find at all. OCR found 13
+    # marks on a page with ~60 filled cells, and two of those 13 were
+    # adjacent 1s merged into "111". The result: 8 of 12 rows overwritten
+    # with one-or-two-cell readings, "111" quantities, and row totals that
+    # contradicted the form's own printed totals. Measured against those
+    # printed totals, on a fresh CLI run:
+    #     hybrid ON  ->  2/11 rows correct
+    #     hybrid OFF ->  7/11 rows correct
+    #
+    # Detection coverage separates the two situations with a wide margin --
+    # measured over every form in this project's test set:
+    #     sample 5-scanned   71 marks / 66 VLM cells = 108%
+    #     sample 13-scanned 138 marks / 135 VLM cells = 102%
+    #     sample 4-scanned   13 marks /  60 VLM cells =  22%
+    # (healthy pages come out at or slightly above 100%, since OCR also picks
+    # up marks outside the VLM's own reading.) MIN_OCR_COVERAGE sits far
+    # below every healthy figure and far above the broken one.
+    #
+    # Standing down is the whole correction, not a partial one: a page this
+    # sparse gives no per-row basis for deciding WHICH rows to trust, so the
+    # VLM's reading stands everywhere and every non-empty row is flagged for
+    # a human instead.
+    vlm_cell_count = sum(len(it.quantities) for it in extracted.items)
+    if vlm_cell_count and len(candidates) < vlm_cell_count * MIN_OCR_COVERAGE:
+        print(f"  hybrid OCR+VLM quantity read: OCR detected only {len(candidates)} marks for "
+              f"{vlm_cell_count} quantity cells ({len(candidates) / vlm_cell_count:.0%} coverage) -- "
+              f"too little of this page's handwriting was found to correct anything with. "
+              f"Kept the model's own reading for every row and flagged them for review.")
+        stand_down_flags = {
+            i: {
+                "status": "unverified",
+                "sizes": [],
+                "note": (f"Hybrid OCR+VLM: the OCR pass found only {len(candidates)} handwritten marks on a page "
+                         f"with {vlm_cell_count} filled cells, so it could not verify anything. This row is the "
+                         f"model's own reading, unchecked -- compare it against the photo."),
+            }
+            for i, it in enumerate(extracted.items) if it.quantities
+        }
+        return {}, stand_down_flags
+
     # Group each row's marks to headers by CODE, not by asking the VLM to
     # reproduce the arithmetic in text -- confirmed necessary 2026-08-20.
     # The prior VLM-grouping step was already given exact ground-truth
@@ -2906,7 +2998,7 @@ def _normalize_fused_size_headers(extracted: ExtractedForm) -> None:
 MAIN_CALL_MAX_RETRIES = 1  # extra attempts beyond the first, only on the zero-quantities flake below
 
 
-def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Path, usage_log: Path, system_prompt: str, brandlist_available: bool = False, do_recount: bool = False, do_preprocess: bool = False, do_hybrid: bool = True) -> OrderForm:
+def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Path, usage_log: Path, system_prompt: str, brandlist_available: bool = False, do_recount: bool = False, do_preprocess: bool = False, do_hybrid: bool = True, use_lighton_hybrid: bool | None = None) -> OrderForm:
     t_image_start = time.perf_counter()
     # mistral-only, and opt-in (do_preprocess), NOT automatic on every
     # mistral call -- automated deskew + contrast normalization (see
@@ -2949,35 +3041,92 @@ def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Pat
     # S/M/L label token (see that function's docstring for why the whole-
     # page pass alone isn't enough on a cramped stacked label+digit cell).
     letter_size_hints: set[int] = set()
-    for attempt in range(MAIN_CALL_MAX_RETRIES + 1):
-        parsed, error, usage = _call_schema(client, model, system_prompt, USER_PROMPT, [image_bytes], main_schema_cls, MAX_TOKENS)
-        print(f"  usage (main, attempt {attempt + 1}): prompt={usage.get('prompt_eval_count')} eval={usage.get('eval_count')} {usage.get('duration_seconds', 0):.1f}s" + (f" ERROR: {error}" if error else ""))
-        _log_usage(usage_log, image_path.name, model, f"main-attempt{attempt + 1}", usage, error)
-        if error:
-            continue
-        if main_schema_cls is MistralExtractedForm:
-            letter_size_hints = {i for i, it in enumerate(parsed.items) if it.letter_sizes}
-            parsed = _mistral_form_to_extracted_form(parsed)
-        n_pairs = sum(len(it.quantities) for it in parsed.items)
-        total_value = sum(qp.quantity for it in parsed.items for qp in it.quantities)
-        if parsed.items and total_value == 0:
-            # Confirmed real flake (2026-08-13, see CLAUDE.md), two different shapes seen:
-            # (a) quantities: [] entirely, or (b) size headers present but every quantity
-            # literally 0 (e.g. {"size": "80", "quantity": 0} for every cell) -- checking
-            # len(quantities) alone misses shape (b), since the pairs exist, just with a
-            # 0 value in every one. Roughly 1-in-5 calls on this model. Retrying is cheap
-            # (one more ~45s call) and resolved it every time observed in testing.
-            print(f"  main call returned {len(parsed.items)} items, {n_pairs} quantity pairs, but every value is 0 -- retrying (known flake)")
-            extracted = parsed  # keep as a fallback in case every retry also comes back empty
-            continue
-        extracted = parsed
-        error = None
-        break
+    # struck_out_hints: mistral's own direct "this row is crossed out"
+    # judgment (see MistralExtractedItem.struck_out), threaded through to
+    # lighton_hybrid_quantities the same way letter_size_hints is -- a
+    # stronger, more direct signal than the blank-quantities/blank-total
+    # proxy _hybrid_ocr_quantities falls back to for model-agnostic
+    # struck-out detection (see _realign_row_clusters_by_total's own
+    # docstring on why that proxy exists at all). Needed here specifically
+    # because that proxy produced a real false positive during testing:
+    # a row where mistral's main call simply flaked and returned empty
+    # quantities/total for ONE run (a documented, known non-determinism,
+    # not an actual strike-through) got its otherwise-correct LightOnOCR-2
+    # reading discarded, even though PaddleOCR's own independent pass on
+    # the exact same (non-struck-out) row found the same real values.
+    struck_out_hints: set[int] = set()
+    if "chandra" in model.lower():
+        # Native-format path (see chandra_parser.py's own module docstring
+        # for the full rationale): Chandra gets no schema and no
+        # MistralExtractedForm-style flags at all, so letter_size_hints/
+        # struck_out_hints stay empty here -- confirmed acceptable by
+        # direct testing (HISTORY.md, 2026-09-07): Chandra's own reading
+        # already comes back with empty quantities for a genuine
+        # struck-out row with no special mechanism needed. Lazy import,
+        # same reason hybrid_quantities_lighton's own import is lazy
+        # inside this function: paid only the first time a run actually
+        # takes this branch.
+        from chandra_parser import call_chandra, parse_chandra_output
+        for attempt in range(MAIN_CALL_MAX_RETRIES + 1):
+            raw_text, error, usage = call_chandra(client, model, image_bytes)
+            print(f"  usage (main, attempt {attempt + 1}): prompt={usage.get('prompt_eval_count')} eval={usage.get('eval_count')} {usage.get('duration_seconds', 0):.1f}s" + (f" ERROR: {error}" if error else ""))
+            _log_usage(usage_log, image_path.name, model, f"main-attempt{attempt + 1}", usage, error)
+            if error:
+                continue
+            try:
+                extracted = parse_chandra_output(raw_text)
+            except Exception as exc:
+                error = f"failed to parse Chandra's native-format output: {exc}"
+                continue
+            break
+    else:
+        for attempt in range(MAIN_CALL_MAX_RETRIES + 1):
+            parsed, error, usage = _call_schema(client, model, system_prompt, USER_PROMPT, [image_bytes], main_schema_cls, MAX_TOKENS)
+            print(f"  usage (main, attempt {attempt + 1}): prompt={usage.get('prompt_eval_count')} eval={usage.get('eval_count')} {usage.get('duration_seconds', 0):.1f}s" + (f" ERROR: {error}" if error else ""))
+            _log_usage(usage_log, image_path.name, model, f"main-attempt{attempt + 1}", usage, error)
+            if error:
+                continue
+            if main_schema_cls is MistralExtractedForm:
+                letter_size_hints = {i for i, it in enumerate(parsed.items) if it.letter_sizes}
+                struck_out_hints = {i for i, it in enumerate(parsed.items) if it.struck_out}
+                parsed = _mistral_form_to_extracted_form(parsed)
+            n_pairs = sum(len(it.quantities) for it in parsed.items)
+            total_value = sum(qp.quantity for it in parsed.items for qp in it.quantities)
+            if parsed.items and total_value == 0:
+                # Confirmed real flake (2026-08-13, see CLAUDE.md), two different shapes seen:
+                # (a) quantities: [] entirely, or (b) size headers present but every quantity
+                # literally 0 (e.g. {"size": "80", "quantity": 0} for every cell) -- checking
+                # len(quantities) alone misses shape (b), since the pairs exist, just with a
+                # 0 value in every one. Roughly 1-in-5 calls on this model. Retrying is cheap
+                # (one more ~45s call) and resolved it every time observed in testing.
+                print(f"  main call returned {len(parsed.items)} items, {n_pairs} quantity pairs, but every value is 0 -- retrying (known flake)")
+                extracted = parsed  # keep as a fallback in case every retry also comes back empty
+                continue
+            extracted = parsed
+            error = None
+            break
 
     if extracted is None:
         raise RuntimeError(f"Main extraction call failed after {MAIN_CALL_MAX_RETRIES + 1} attempt(s): {error}")
 
     _normalize_fused_size_headers(extracted)
+
+    # Per-template correction memory (template_learning.py): a signature
+    # match here means a human has already reviewed and corrected at least
+    # one earlier form with this exact seller_name + size_headers layout.
+    # Looked up once, used twice below -- immediately, to pick a hybrid-
+    # quantities backend this template has historically needed less
+    # correction under (only when the caller expressed no preference of its
+    # own); and again just before this image's own debug artifacts are
+    # written, to reapply whatever specific item-name/column-shift
+    # corrections a human already made on this template before. Matching
+    # only happens here, AFTER the main call, deliberately -- see
+    # template_learning.py's module docstring for why (seller_name/
+    # size_headers don't exist before it runs).
+    template_match = template_learning.lookup(extracted.seller_name, extracted.size_headers)
+    if use_lighton_hybrid is None:
+        preferred = template_learning.preferred_backend(template_match)
+        use_lighton_hybrid = (preferred != "paddleocr")
 
     # 2026-08-22: bookkeeping/diagnostic text from the hybrid and recount
     # passes used to be dumped straight into extracted.notes -- a growing
@@ -2995,7 +3144,30 @@ def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Pat
     hybrid_flags: dict[int, dict] = {}
     if do_hybrid and extracted.items:
         try:
-            hybrid_quantities, hybrid_flags = _hybrid_ocr_quantities(image_path, extracted, outdir, letter_size_hints)
+            # use_lighton_hybrid (default ON as of 2026-09-05 -- see
+            # --no-lighton-hybrid to fall back to the previous default):
+            # swaps PaddleOCR+grid.py's pixel-position DP for a second VLM
+            # call (maternion/LightOnOCR-2:1b, local Ollama) that reads its
+            # own assembled table back out -- see hybrid_quantities_lighton.py's
+            # module docstring for the full rationale and known gaps (an
+            # imported local, not a top-level import, so this file has no
+            # import-time dependency on it -- only paid the first time a run
+            # actually reaches this branch). Compared against the previous
+            # PaddleOCR default on identical mistral output via
+            # compare_hybrid_backends.py: near-total row-for-row agreement on
+            # 3 of 4 test forms (two independent mechanisms landing on the
+            # same correction is real cross-validation, not coincidence) and
+            # a still-being-verified divergence on the one form where
+            # PaddleOCR's own coverage guard already stood down entirely
+            # (sample 4-scanned, where PaddleOCR contributed nothing anyway).
+            # Made default ON before that last form's rows were individually
+            # re-verified against the photo -- if you're reading this while
+            # investigating a regression, that's the first thing to check.
+            if use_lighton_hybrid:
+                from hybrid_quantities_lighton import lighton_hybrid_quantities
+                hybrid_quantities, hybrid_flags = lighton_hybrid_quantities(image_path, extracted, outdir, struck_out_hints, letter_size_hints)
+            else:
+                hybrid_quantities, hybrid_flags = _hybrid_ocr_quantities(image_path, extracted, outdir, letter_size_hints)
             for i, qty in hybrid_quantities.items():
                 extracted.items[i].quantities = [QuantityPair(size=size, quantity=q) for size, q in qty.items()]
         except Exception as exc:
@@ -3017,6 +3189,17 @@ def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Pat
         except Exception as exc:
             print(f"  row-crop quantity recount failed ({exc}) -- kept the original full-page quantities for every row.")
 
+    corrections_applied = template_learning.apply_corrections(template_match, extracted) if template_match else []
+    for corr in corrections_applied:
+        i = corr["row_index"]
+        if i < len(recount_flags):
+            recount_flags[i] = _merge_flag(recount_flags[i], "template_corrected", corr["sizes"], corr["note"])
+    backend_used = ("lighton" if use_lighton_hybrid else "paddleocr") if do_hybrid else None
+    template_learning.write_debug_artifact(
+        outdir, image_path.stem, extracted.seller_name, extracted.size_headers, template_match,
+        backend_used=backend_used, model_used=model, corrections_applied=corrections_applied,
+    )
+
     _write_debug_artifacts(outdir, image_path.stem, extracted, recount_flags)
     total_duration = time.perf_counter() - t_image_start
     _log_usage(usage_log, image_path.name, model, "total", {"prompt_eval_count": None, "eval_count": None, "duration_seconds": total_duration})
@@ -3024,7 +3207,7 @@ def extract_one(client: ollama.Client, model: str, image_path: Path, outdir: Pat
     return _to_order_form(extracted, image_path.name)
 
 
-_FLAG_SEVERITY = {"no_recount": 0, "ok": 0, "unverified": 1, "resolved": 2, "auto_corrected": 2, "unresolved": 3}
+_FLAG_SEVERITY = {"no_recount": 0, "ok": 0, "unverified": 1, "resolved": 2, "auto_corrected": 2, "template_corrected": 2, "unresolved": 3}
 
 
 def _merge_flag(base: dict | None, status: str, sizes: list[str], note: str) -> dict:
@@ -3094,7 +3277,7 @@ def main():
     parser = argparse.ArgumentParser(description="Extract structured data from order form photos via Ollama Cloud (production pipeline, default model mistral-large-3:675b -- see module docstring).")
     parser.add_argument("input", help="Path to a single image, or a folder of images. Quote paths containing spaces.")
     parser.add_argument("--outdir", default="extracted_ollama_cloud", help="Output directory (default: ./extracted_ollama_cloud)")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama Cloud model tag (default: {DEFAULT_MODEL} -- see HISTORY.md for the model comparison this was chosen from)")
+    parser.add_argument("--model", default=DEFAULT_MODEL, help=f"Ollama Cloud model tag (default: {DEFAULT_MODEL} -- see HISTORY.md for the model comparison this was chosen from), or 'chandra' as a shorthand for {CHANDRA_MODEL} (local Ollama, free, no API key -- see chandra_parser.py and HISTORY.md's 2026-09-07 evaluation for what this trades off against the default: comparable accuracy on this project's test forms, but 2-3x slower than mistral's own main call alone, needs `ollama pull {CHANDRA_MODEL}` first, and doesn't have mistral's struck_out/date_present/letter_sizes flags -- chandra_parser.py's own reading already handles the first two correctly without them).")
     parser.add_argument("--usage-log", default="usage_log_ollama_cloud.csv", help="CSV file every call's token usage/timing is appended to (default: ./usage_log_ollama_cloud.csv, kept separate from extract_claude.py's usage_log.csv)")
     parser.add_argument("--no-brandlist-check", action="store_true", help="Skip the local (free, no API cost) cross-check against the brandlist product catalog.")
     parser.add_argument("--recount", action="store_true", help="Run the per-row recount pass (default: off). Row-crop alignment (row_top_frac/row_bottom_frac from the main call) has a documented reliability gap -- a misaligned crop can get silently accepted as 'resolved' when it actually holds a neighboring row's data, which reads as higher-confidence than doing nothing. Off by default for that reason; see HISTORY.md for the specific case this caused. --hybrid-quantities is the recommended way to independently verify quantities instead.")
@@ -3104,6 +3287,7 @@ def main():
                          help="Pass a string reasoning-effort level to Ollama's think= parameter instead of a bare bool. Confirmed necessary 2026-09-02 for glm-5.3-flash: that model's own reasoning is ALWAYS ON (per its ollama.com model page -- 'effort tunable per request across low, high, and max levels'), so a plain --think/--no-think bool has no effect on it at all. Confirmed via real runs on sample 3-scanned.jpg: 'low' avoids the truncation (~2900 tokens, ~13s) but flakes to zero quantities often; 'medium' -- not a real tier this model's own vocabulary recognizes at all (only low/high/max) -- fails identically to the bare bool (32000-token truncation, both attempts); 'high' avoided both problems on that form (20/20 rows exact vs. mistral-large-3:675b's own reading) but STILL flaked empty 2 of 3 attempts on a different, free-form page (sample 2.jpeg) -- 'high' is not actually a fix for the flake rate, it just happened to succeed on the first try on the one form it was first tested against. 'max', the model's own documented top tier: the installed `ollama` package's own ChatRequest normally validates think as bool | Literal['low','medium','high'] via Pydantic and rejects 'max' client-side before any request is sent -- confirmed via a raw HTTP call that the Ollama Cloud API itself accepts 'max' fine, so _call_schema bypasses the SDK's own chat() method (see _chat_bypassing_sdk_validation) specifically for this value. The bypass mechanism itself works, but 'max' is WORSE than 'high' in practice: tried on sample 5-scanned.jpg (the easiest form in this project's test set) and it burned the entire 32000-token ceiling in 273.6s without ever finishing (done_reason=length) -- 'max' triggers even more verbose reasoning than this pipeline's current MAX_TOKENS budget can accommodate, so its actual accuracy has never been observed. Not recommended; 'high' remains the best working setting despite its own flake rate. Takes precedence over --think/--no-think when set. Not yet confirmed for any other model.")
     parser.add_argument("--preprocess-image", action="store_true", help="Apply automated deskew + CLAHE contrast normalization (preprocess_for_vlm.py) before sending the image to mistral. Confirmed to fix a real row-bleed bug on one hard form, but also confirmed via A/B testing to damage other forms (a previously exact-match row picked up a shift and a new digit error). Off by default for that reason -- turn this on only for a specific image you know has a row-bleed problem, not as a general-purpose quality improvement. See HISTORY.md for the full numbers.")
     parser.add_argument("--no-hybrid-quantities", action="store_true", help="Skip the OCR-grounded quantity re-read (default: on). Re-reads quantities from REAL OCR-measured coordinates (not the VLM's self-report) for headers and marks, then groups each mark with its nearest header by x-position -- one whole-image OCR pass, no per-row crops, header-grouping done deterministically in code (order-preserving DP), not by a model call. Extensively tested and regression-checked (see HISTORY.md): corrects mistral's column-position drift, recovers handwritten overflow columns past the printed grid, resolves letter-coded sizes (S/M/L/XL/XXL), and reconciles its own reading against the VLM's per-row reading rather than unconditionally overriding it. This is the main accuracy lever for the production pipeline -- only disable it to isolate a bug or compare raw VLM output.")
+    parser.add_argument("--no-lighton-hybrid", action="store_true", help="Fall back to the previous default (PaddleOCR + grid.py's pixel-position DP, extract_ollama_cloud._hybrid_ocr_quantities) instead of hybrid_quantities_lighton.py's LightOnOCR-2-based quantity re-read, which became the default 2026-09-05 (has no effect if --no-hybrid-quantities is also set, since neither backend runs then). See hybrid_quantities_lighton.py's module docstring and compare_hybrid_backends.py for what justified the switch and what's still open -- most notably, sample 4-scanned's rows haven't all been individually re-verified against the photo yet. Needs maternion/LightOnOCR-2:1b pulled in local Ollama (`ollama pull maternion/LightOnOCR-2:1b`) unless this flag is passed.")
     parser.set_defaults(think=None)
     args = parser.parse_args()
 
@@ -3113,7 +3297,10 @@ def main():
     if args.think_effort is not None:
         THINK = args.think_effort
 
-    client = get_client()
+    if args.model.lower() == "chandra":
+        args.model = CHANDRA_MODEL
+
+    client = get_client(args.model)
 
     style_codes: list[str] = []
     known_sizes: list[int] = []
@@ -3151,7 +3338,7 @@ def main():
     for i, img_path in enumerate(image_paths, 1):
         print(f"[{i}/{len(image_paths)}] Extracting {img_path.name} ...", flush=True)
         try:
-            forms[img_path.stem] = extract_one(client, args.model, img_path, outdir, usage_log, system_prompt, brandlist_available, do_recount=args.recount, do_preprocess=args.preprocess_image, do_hybrid=not args.no_hybrid_quantities)
+            forms[img_path.stem] = extract_one(client, args.model, img_path, outdir, usage_log, system_prompt, brandlist_available, do_recount=args.recount, do_preprocess=args.preprocess_image, do_hybrid=not args.no_hybrid_quantities, use_lighton_hybrid=(False if args.no_lighton_hybrid else None))
         except Exception as exc:
             print(f"  FAILED: {exc}", file=sys.stderr)
 

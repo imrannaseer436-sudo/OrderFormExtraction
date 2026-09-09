@@ -346,11 +346,24 @@ def _buyers() -> list[tuple[str, str, str]]:
     combines name + city since real buyer identity on these forms is often
     only disambiguated by city (confirmed: multiple "SHARDA SALES" buyer
     records exist in different cities/branches, only distinguishable by
-    city). Loaded once per process, same pattern as _catalog()."""
+    city). Loaded once per process, same pattern as _catalog().
+
+    IsActive = 0, NOT 1 -- this column's sense is inverted from its name in
+    this database. Confirmed directly against live data (2026-09-03): of the
+    last 2000 orders, 1996 went to buyers with IsActive = 0 (882 distinct
+    buyers) and 4 to buyers with IsActive = 1; and the IsActive = 1 records
+    with any order history at all are visibly retired accounts, several with
+    "(CLOSE)" written into the name itself. So IsActive = 1 means closed,
+    and this filter previously searched a pool that excluded essentially
+    every buyer in daily use -- every real buyer this check was meant to
+    recognize was missing from it, which is why party-name matches scored so
+    low. Kept as a literal filter (rather than dropping it) because the
+    closed records are genuine noise for matching: many are near-duplicates
+    of live accounts."""
     conn = _connect()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT BuyerName, City FROM buyer WHERE IsActive = 1")
+        cur.execute("SELECT BuyerName, City FROM buyer WHERE IsActive = 0")
         return [(bname, city or "", f"{bname} {city or ''}".strip()) for bname, city in cur.fetchall()]
     finally:
         conn.close()

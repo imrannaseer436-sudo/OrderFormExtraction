@@ -5916,3 +5916,1504 @@ item) as this file has documented extensively elsewhere; building a
 correct gate would have required duplicating the row-clustering logic
 itself, a bigger, riskier change than the targeted-crop fix that was
 shipped instead.
+
+---
+
+## 2026-09-03 — `sample 4-scanned.jpg`: the hybrid pass makes a form WORSE, and the detection-coverage guard
+
+**Reported symptom:** "I ran sample 4-scanned, results are not promising
+— almost all the values are just one."
+
+**What the form actually is:** a page whose cells genuinely are almost
+all a single `1`. Row 1 has 8 filled cells and a printed Total-Dozen of
+8; row 4 has 3 cells and a printed 3. So "almost all the values are one"
+is a correct reading of the page — the defect was elsewhere.
+
+**What actually shipped for that form** (from the review session's own
+`<name>.json`):
+
+```
+B.3825 SHORT SET     printed  8   got  9   {'45':1,'50':4,'55':1,'60':1,'65':1,'70':1}
+B.3824 SHORT SET     printed  5   got 222  {'75': 111, '55': 111}
+TAQ CASUAL 3/4 SET   printed  5   got  1   {'70': 1}
+B.4749 FLANG SET     printed  7   got  1   {'100': 1}
+CENTRE FLANT SET     printed  7   got  1   {'75': 1}
+```
+
+`111` is the tell: three adjacent `1` cells detected by PaddleOCR as one
+text box and read as the number one hundred and eleven.
+
+**Root cause, from `<name>.hybrid_debug.json`:** OCR detected **13
+handwritten marks on a page with ~60 filled cells**. A lone vertical
+stroke is the hardest possible glyph for a text *detector* (as distinct
+from a recognizer) — barely any ink, and no shape to key on.
+
+The damage wasn't the sparse detection itself but what the pipeline then
+did with it. `_reconcile_hybrid_with_vlm` treats a disagreement about
+*which columns are filled* as evidence the VLM drifted, and keeps the OCR
+reading. Eight of twelve rows carried a flag reading, verbatim:
+
+> model read this row under different sizes (['45','50','55','60','65'])
+> than pixel-OCR did (['70']) — kept the OCR reading.
+
+So near-total blindness was being treated as near-total authority. The
+VLM's own reading — preserved in the debug file's `vlm_quantities`, the
+only artifact that has it — was substantially correct, including rows of
+seven 1s matching their printed totals exactly.
+
+**Measured against the form's own printed row totals** (fresh CLI runs,
+not a replay):
+
+| | rows matching the printed total |
+|---|---|
+| hybrid on (the default) | 2/11 |
+| `--no-hybrid-quantities` | 7/11, and 10/11 on a second draw |
+| hybrid on, with the guard below | **10/11**, reproduced twice |
+
+**The fix: a detection-coverage guard, not a reconciliation tweak.** "Did
+OCR see this page at all?" is answerable before any per-row logic runs,
+and it separates the two situations with a very wide margin:
+
+| form | OCR marks | VLM cells | coverage |
+|---|---|---|---|
+| `sample 5-scanned` | 71 | 66 | 108% |
+| `sample 13-scanned` | 138 | 135 | 102% |
+| `sample 4-scanned` | 13 | 60 | **22%** |
+
+Healthy pages land at or slightly above 100%, because OCR also picks up
+marks outside the VLM's own reading. `MIN_OCR_COVERAGE = 0.60` sits far
+below every healthy figure and far above the broken one — not a tuned
+parameter threading between two close clusters.
+
+Below the gate the stage stands down for the **whole page**, not per row.
+Per-row would have been the wrong shape: a page this sparse gives no
+basis for deciding *which* rows to trust, and the rows OCR did find
+something on are exactly the ones it read as `111`. So the VLM's reading
+stands everywhere and every non-empty row is flagged `unverified` with a
+note naming the coverage figure.
+
+**Regression-checked** on fresh live runs against the rest of the set —
+all unchanged, guard never fires: `sample 5-scanned` 14/14 rows
+hybrid-corrected (71 cells), `sample 12-scanned` 10/10 (45 cells),
+`sample 13-scanned` 20/20 (138 cells), `sample 2.jpeg` still no-ops as a
+free-form page.
+
+**What this does NOT do:** it doesn't make these forms accurate, it makes
+them honest. Every row on such a page comes back marked unverified,
+because nothing automated checked it. Recovering these pages properly
+would need a detector that finds isolated pen strokes — a cell-grid
+crop-and-read pass rather than whole-page text detection, which is
+different machinery from anything currently in the pipeline.
+
+**Also worth recording:** the reported symptom and the actual defect were
+different things. "Almost all the values are just one" described the
+*form*, accurately; the defect was `111`s, dropped cells and one-cell
+rows. The form's own printed Total-Dozen column is what made this
+measurable rather than a matter of opinion, and it's now surfaced beside
+every computed row total in the review UI for exactly that reason.
+
+---
+
+## 2026-09-04 — Evaluating alternative OCR models to replace PaddleOCR on hard-detection forms
+
+Picks up directly from the line the 2026-09-03 entry ended on: recovering
+`sample 4-scanned.jpg`-style pages "would need a detector that finds
+isolated pen strokes — a cell-grid crop-and-read pass rather than
+whole-page text detection, which is different machinery from anything
+currently in the pipeline." This entry is that search. **Nothing here is
+wired into `extract_ollama_cloud.py` — every finding below came from
+standalone scripts against local Ollama models, run outside the
+pipeline, comparing candidate output against hand-verified ground truth
+and the existing `extracted_regress/` baseline.** CLAUDE.md's documented
+production behavior is unchanged as of this writing.
+
+Also surfaced along the way, independent of which model wins: **the main
+call's own `row_top_frac`/`row_bottom_frac` fields are fabricated, not
+measured.** Checked across `sample 4-scanned`, `5-scanned`, `12-scanned`,
+`13-scanned` — every item's row band is *exactly* `(table_bottom_frac -
+table_top_frac) / n_items`, regardless of that item's real handwriting
+density (a two-line item and a one-line item get identical-height bands).
+Confirmed the hard way on `sample 4-scanned`: cropping via item 2's
+*reported* frac (0.48–0.53) actually shows item 3's handwriting on the
+page. Nothing currently downstream depends on these fracs for correctness
+(hybrid-quantities uses real pixel-grounded OCR positions, not these), so
+this wasn't chased further — recorded here because it will bite the next
+person who tries to use them for anything spatial.
+
+Also found, specific to `sample 4-scanned`: **`row_total` is not an
+independent reading on this form — it's the sum of the row's own
+extracted quantities, 11 times out of 12.** Compared `row_total` against
+`sum(quantities)` for every row in a fresh `sample 4-scanned` run: 11
+matched exactly, the 12th was off by one (9 vs 8). The real printed
+totals on the page (read directly off the photo) are almost all "8" —
+not the shrinking numbers the model reported. CLAUDE.md documents this
+field as "the strongest independent check a reviewer has"; on this
+specific form it's circular, which is *why* the truncation below went
+uncaught by anything in the pipeline.
+
+### Main-call reliability gap found on `sample 4-scanned`, independent of the OCR search
+
+Before evaluating any alternative model, re-examined mistral's own raw
+reading against the photo (pixel-aligned crops, column-by-column) since
+the 2026-09-03 entry only checked cell *counts*, not which cells:
+
+- Every one of this form's 12 rows is a two-printed-line item (a code
+  line, then a description+quantities line). Comparing 8 saved runs of
+  the identical image/flags/settings: one run (`ui_sessions/fd49000b6042`)
+  lost the code line entirely on 9 of 12 items ("B.3825 SHORT SET" →
+  "SHORT SET", "CREO B4756 PANT" → "PANT" with "PANT" also leaking into
+  the `type` field) — pure sampling non-determinism, not a settings
+  difference (`app/pipeline.py`'s extraction call passes fixed
+  `do_recount=False, do_preprocess=False, do_hybrid=True` every time).
+- Rows silently truncate mid-row on the trailing (higher-size) columns:
+  rows 2, 3, 8, 9, 11 all dropped their real last 2-3 filled cells in one
+  representative run, confirmed present in the photo.
+- Row 1's one non-`1` value (a handwritten `4`) gets placed one column
+  early (col 50 instead of col 55).
+- "GENTLE F/PANT SET" (row 7) misread as "CENTRE FLANT/PLANT/FANCY SET"
+  in every one of the 8 saved runs — consistent, not random, unlike the
+  item-name instability above.
+
+None of this is caused by the coverage guard — it's the VLM's own main
+call, independent of hybrid-quantities standing down or not. Recorded
+here as the actual target the OCR-replacement search below is trying to
+beat, not just "PaddleOCR can't detect faint 1s."
+
+### LightOnOCR-2 (`maternion/LightOnOCR-2:1b`, local Ollama, 1B params, 16K context)
+
+A document-OCR VLM (Apache 2.0), pulled via `ollama pull
+maternion/LightOnOCR-2:1b`. Its own model card doesn't claim handwriting
+as a strength (training notes call out French text, arXiv, general scan
+coverage) and it reads a row holistically rather than detect-then-
+recognize, unlike PaddleOCR — meaning it has no analogous "find a
+region" step to fail at on a bare `1` stroke.
+
+**First pass (naive percentage-based crops) found a real failure mode,
+traced and fixed before drawing any accuracy conclusion.** A row-band
+crop *without* the header row repeated at the top degenerates into
+runaway generation — one attempt produced 400+ empty `<td>` cells and a
+hallucinated item name ("FLYING SET RNS") that appears nowhere on the
+form. Stitching the real header row above every crop fixed this
+outright, on every form tested afterward. Root cause not fully isolated,
+but consistent with the model's own v2 release notes (see below), which
+name "reducing looping errors" as a specific training focus — implying
+this is a known, only-partially-fixed class of failure for this model
+family, not something specific to this setup.
+
+**Even header-anchored crops aren't immune**, confirmed on
+`sample 5-scanned`: three separate crops (rows 1-4, 5-8, 9-12) all came
+back reporting the *exact same* "Trend Trunk" numbers, byte-for-byte,
+regardless of which rows the crop actually covered. Traced to the header
+crop's bottom edge sitting close enough to row 1's real position (per the
+fabricated-frac finding above, table_top_frac undershoots row 1's actual
+position on this form) that it bled a sliver of row 1's own content into
+every header stitch, and the model echoed that content forward instead of
+reading each new crop fresh.
+
+**Fixed by cropping from real, CV-detected row boundaries
+(`grid.py`'s `iter_row_boundary_candidates_auto`) instead of guessed
+fractions** — already-built machinery in this repo, previously only
+wired into the legacy `extract_ollama.py` path. On `sample 5-scanned`,
+14 individual header+row crops built this way and read one at a time:
+**11 of 14 rows matched the `extracted_regress/` baseline exactly**, zero
+duplicated content across any of the 14 independent calls. The 3 misses
+were a single wrong cell, and a whole-row-values-right-but-one-column-off
+shift — recognizable, flaggable error shapes, not garbage.
+
+**`grid.py`'s own candidate-validation is too forgiving for a two-line-
+item form, confirmed by direct testing on `sample 4-scanned`.** Its
+`item_alignment_ok` check (fuzzy substring match against the expected
+item name) let a candidate through as "12/12 good" that actually split
+every logical item into two separate boundary intervals — a code-line-
+only crop with no data, immediately followed by a description+quantities
+crop — because "1. B.3825" against expected "B.3825 SHORT SET" shares
+enough tokens to pass the loose check. Requesting boundaries at 2x
+density (24 sub-lines for 12 two-line items, to match what was actually
+being found) failed differently: `_find_uniform_run`'s greedy search
+found no globally-uniform 25-point run at all, because the code/
+description sub-line gaps aren't real ruled lines throughout the page,
+only a density-profile artifact in roughly the first half of the table.
+**Resolved pragmatically**, not algorithmically: fell back to generous,
+overlapping, multi-item crops (3 crops of ~4 items each, header-anchored,
+deskewed by `grid.py`'s own measured skew), positioned by direct visual
+comparison against the photo rather than any automatic boundary search.
+
+**Final `sample 4-scanned` result, cross-checking overlapping crops
+against each other where they disagreed:**
+
+| row | result |
+|---|---|
+| 1, 2, 3, 4, 8 | exact match, including row 1's misplaced `4` and row 4's 3-cell `{60:1,70:1,80:1}` pattern — both of which mistral's own main call gets wrong |
+| 9, 11 | values/count/total all correct, shifted one column right as a block |
+| 5, 6, 7 | close — 7 of ~8 cells, consistent with the row's own printed total implying one more |
+| 12 (MYD PANT 3/4) | not resolved as quantities — mistral returns this row completely empty; this pass read `45:1, 50:1` for it in an earlier attempt, confirming the row has real data mistral drops entirely, but never got a full reading |
+
+Also directly demonstrated the crop-edge effect that makes overlapping
+crops necessary rather than optional: **row 4 read wrong (all 8 cells
+filled with `1`, contradicting its own circled total of 3) when it sat as
+the last row in one crop, and exactly right when the identical row sat
+mid-crop in an adjacent, overlapping crop.** Same pattern on row 8.
+Content at a crop's edge is measurably less reliable than the same
+content comfortably inside one — confirmed, not assumed.
+
+**Full-page (no crop at all) hits a hard, non-tunable ceiling.** Fed the
+complete, unmodified page in one call: fast (10-18s) and the rows that
+came through were as accurate as the cropped versions — on
+`sample 5-scanned` it even beat the crop-based reading on one row (MYNA)
+— but both `sample 4-scanned` and `sample 5-scanned` cut off mid-table
+(row 8/12 and row 6/14 respectively), `done_reason: length` both times.
+Retried with `num_predict: 4096` (should have allowed ~4x more output for
+a ~900-char response): **byte-identical output, same cutoff point.** Not
+a generation-length setting — the model's fixed context budget (image
+tokens + output tokens sharing one pool) is exhausted by image encoding
+before output finishes, confirmed by the fact that no `num_predict`
+change moved the wall at all.
+
+**Checked the official sources for a documented fix — found none.**
+[LightOn's own fine-tuning notebook](https://huggingface.co/lightonai)
+(`Reference/finetune_LightOnOCR.ipynb` in this repo) uses the raw
+HuggingFace `transformers` model, not the Ollama GGUF build tested here,
+and exposes the real lever (`processor(..., size={"longest_edge": N})`,
+directly controlling vision-token count) but only in the context of
+fine-tuning on short paragraph-level OCR snippets (`MAX_LENGTH=1024`,
+`max_new_tokens=512`) — no tiling/chunking strategy for a document too
+large for one pass. [The LightOnOCR-2 blog
+post](https://huggingface.co/blog/lightonai/lightonocr-2) doesn't state a
+context window number or discuss truncation at all; it does confirm
+83.2±0.9 on OlmOCR-Bench (best of evaluated systems, beating a 9B model
+by 1.5+ points despite being ~9x smaller) and explicitly names "reducing
+looping errors" as a v2 training focus — corroborating, not explaining,
+the runaway-generation failure mode found above.
+
+### GLM-OCR (`glm-ocr`, official Ollama library, 0.9B params, 128K context)
+
+Zhipu AI's GLM-V + CogViT-based document model, explicitly marketed for
+table recognition specifically (not just general OCR), with a context
+window 8x LightOnOCR-2's — on paper, a direct answer to the truncation
+problem above. Pulled via `ollama pull glm-ocr` (2.2GB).
+
+**First test (full page, generic transcribe prompt) was worse than
+useless: every one of 12 rows on `sample 4-scanned` came back reading the
+identical `1 1 1 1 1 1 1 1, total 8`, regardless of the row's real
+content** (row 1 has a `4`; row 4 has 3 cells, not 8; row 8 has 7). Not
+truncation — `done_reason` wasn't `length` — a templated, content-blind
+guess repeated for every row.
+
+**Root-caused via the [official GitHub
+repo](https://github.com/zai-org/GLM-OCR): `glm-ocr` is not a monolithic
+end-to-end VLM the way LightOnOCR-2 is — it's a full pipeline** (a
+separate layout-detection stage, then OCR per detected region, then a
+result formatter — `PageLoader` → `OCRClient` → `ResultFormatter` in
+their own source), architecturally much closer to PaddleOCR's detect-
+then-recognize shape than to LightOnOCR-2's single-call design. The
+official Python API is `parse("image.png")` — no prompt argument at all,
+because the pipeline crops for the model internally. Feeding the bare
+Ollama model a whole page directly, as the first test did, is roughly
+equivalent to calling PaddleOCR's recognizer on a full page without ever
+running its detector.
+
+**Re-tested with a focused crop (mimicking what the real layout detector
+would hand it) — still poor.** Same 3 overlapping crops used for
+LightOnOCR-2's decisive `sample 4-scanned` test: item names came through
+reasonably, but 8 of 12 rows returned completely blank quantities, the 3
+rows with any values were incomplete (7 cells instead of 8, missing row
+1's `4`), every two-line item got split into two separate output rows
+(never merged, unlike LightOnOCR-2), and one crop's response duplicated
+its own table verbatim.
+
+**The actual fix, found empirically, not from documentation: exclude the
+letterhead/party-info block above the table, and do NOT upscale the
+image.** Both matter independently:
+
+- A single crop from just above the header row down to the page bottom
+  (the *whole* table, no per-row splitting needed) at the image's native
+  resolution, one call: `sample 4-scanned` went from all-blank/templated
+  to **5 exact rows, 2 plausible, 1 close (same missed `4` as before), 3
+  blank, row 12 still unresolved** — competitive with LightOnOCR-2's
+  three-crop, multiple-call result, in one ~15s call.
+- Resolution is a real, separate variable: the identical table-only crop
+  upscaled 2.6x (the treatment that helps LightOnOCR-2) choked almost
+  immediately — 16 characters of output, `done_reason: length`. The same
+  crop at native resolution completed the full table normally (3280
+  characters, no truncation). glm-ocr's accuracy/resolution tradeoff runs
+  opposite to LightOnOCR-2's.
+- Confirmed the letterhead specifically matters, not just resolution or
+  prompt: re-tried the *full* page (letterhead included) at native
+  resolution with a `"Table Recognition:"` task-prefix prompt (a
+  plausible mode-switch guess, given the model's marketing separates
+  "text/table/figure recognition" as distinct capabilities) — result was
+  **worse than the original degenerate run**: every quantity cell blank,
+  item 12 and the footer missing entirely. The `"Table Recognition:"`
+  prefix made no measurable difference on the table-only crop either
+  (compared cell-by-cell against the plain prompt — identical values,
+  only cosmetic total-rendering differences). So: not a prompt-mode
+  switch, not resolvable by resolution alone — excluding the letterhead
+  block is the load-bearing change.
+
+**Extended to the other 3 regression forms with the same treatment (one
+table-only native-resolution crop, one call each) — matched or beat
+LightOnOCR-2's much-more-engineered results on all three:**
+
+| form | glm-ocr (1 crop, 1 call, ~15-25s) | LightOnOCR-2 (grid.py crops, multiple calls, minutes) |
+|---|---|---|
+| `sample 5-scanned` | **12/14 exact** | 11/14 exact |
+| `sample 12-scanned` | **9/10** (the one miss — "TA22 Short", 94 vs true 79 — is the *identical* wrong value LightOnOCR-2 independently produced) | 8/10 |
+| `sample 13-scanned` | 16/20 (tied; rows 4-7 shift, self-correcting by row 8) | 16/20 (same rows, same shape of failure) |
+| `sample 4-scanned` | 5 exact / 2 plausible / 1 close / 3 blank / 1 unresolved | 5 exact / 2 shifted / 1 plausible / 3 close / 1 unresolved |
+
+Two independent models landing on the exact same wrong value
+(`sample 12-scanned`'s "TA22 Short") and failing in the same shape on the
+same rows of `sample 13-scanned` is read as evidence those specific
+source rows are genuinely ambiguous on the page, not a shared model
+artifact.
+
+### Where this stands, to pick back up
+
+**Standing recommendation, not yet decided or built:** `glm-ocr` (one
+crop excluding the letterhead, native resolution, one call) for the
+general case — it matches or beats LightOnOCR-2 on 3 of 4 test forms
+while needing only one forgiving crop instead of precise row boundaries,
+and one ~15-25s call instead of several calls over minutes. LightOnOCR-2
+still holds the edge specifically on `sample 4-scanned`, the hardest form
+in the project, where glm-ocr blanks 3 rows it gets close-but-incomplete.
+
+Open for next time:
+- Whether to wire in glm-ocr generally and keep LightOnOCR-2 (or today's
+  existing coverage-guard unverified-flag behavior) specifically for
+  sample-4-caliber forms, or some other split.
+- A fair, direct latency/throughput comparison against PaddleOCR's own
+  detect-then-recognize pipeline hasn't been run — everything above is
+  wall-clock-observed during ad hoc testing, not benchmarked.
+- Item-name reading is weak on both candidate models regardless of which
+  wins for quantities (no ditto-mark inheritance, real spelling drift) —
+  mistral should stay the item-name source either way; only the quantity-
+  reading role is in play.
+- `grid.py`'s row-boundary candidate validation (`item_alignment_ok`) has
+  a demonstrated blind spot on two-line-per-item forms — worth hardening
+  independent of which OCR model gets used downstream of it.
+- `sample 4-scanned` row 12 (MYD PANT 3/4) is still unresolved by every
+  method tried across both models — mistral drops it entirely, and the
+  best partial evidence (two real cells) came from one early, since-
+  superseded LightOnOCR-2 attempt, never confirmed in a clean run.
+
+## 2026-09-05 — LightOnOCR-2 with a single table-only crop: the real fix was `num_ctx`, not `num_predict`
+
+Direct follow-up to the standing recommendation above, prompted by asking
+"does the glm-ocr-style single-crop treatment also work for LightOnOCR-2,
+which the 2026-09-04 entry only tested via `grid.py` per-row crops?" Same
+convention as before: standalone script
+(`lighton_table_crop_test.py`, not committed — lived in a scratch
+directory for this session), nothing wired into any pipeline file.
+
+**First attempt reused `grid.py`'s row-boundary detection to find the
+table's top/bottom edge and hit exactly the failure mode `grid.py`'s own
+docstring warns about**: the detector locked onto the letterhead's ruled
+lines instead of the real table, producing a 906x480px crop containing
+the party-info box and only 3 of 12 item rows. Not chased further —
+`grid.py`'s boundary search is validated in `extract_ollama.py` by
+checking OCR'd row content against expected item names before accepting
+a candidate; this standalone script had no such check.
+
+**Switched to `table_top_frac`/`table_bottom_frac` from an already-saved
+mistral `raw.json` for the same image instead.** This also needed a
+correction: `table_top_frac` turned out to be the top of item ROW 1's
+data, not the header row above it — a crop starting exactly there has no
+header row at all, which is precisely LightOnOCR-2's documented
+runaway-generation trigger (confirmed: got row 1's data correct, then
+generated 400+ empty `<th>` cells). Visually located the real header band
+on `sample 4-scanned` at frac ≈0.26 vs. `table_top_frac`'s 0.38; a flat
+0.12 margin above `table_top_frac` cleared the header on every form
+tested below.
+
+**With the header included, hit the second documented failure mode:
+`done_reason: length`, cut off partway through row 5 of 12.** The
+2026-09-04 entry attributed this to "the model's fixed context budget
+(image tokens + output tokens sharing one pool)... confirmed by the fact
+that no `num_predict` change moved the wall at all" — but `num_predict`
+controls output length, not the context window itself. **Explicitly
+setting `num_ctx: 16384` (Ollama's option for the actual context window,
+never tried in the prior entry) fixed the truncation outright** — same
+crop, same prompt, `done_reason` went from `length` to `stop`, and the
+model produced all 12 rows in one call. This reframes the prior
+conclusion: it was never a hard ceiling in the model itself, only in
+Ollama's default runtime `num_ctx` (2048 or 4096 depending on install),
+which is exactly the kind of knob `num_predict` cannot reach.
+
+**Result, single call per image, `num_ctx=16384`, `num_predict=-1`,
+`temperature=0`, cross-checked directly against the photo (not just the
+row groupings the 2026-09-04 entry recorded):**
+
+| form | this run (single table crop) | 2026-09-04 LightOnOCR-2 (per-row `grid.py` crops, multiple calls) | 2026-09-04 glm-ocr (single crop) |
+|---|---|---|---|
+| `sample 5-scanned` | **14/14 exact**, including both non-numeric "x" marks and the two handwritten overflow columns (105→10, 110→10) | 11/14 | 12/14 |
+| `sample 12-scanned` | **10/10 rows' quantities exact**; one row's own auxiliary Total-field value looks wrong (19 vs. the ~14 implied by its own listed cells) — doesn't touch the quantity cells themselves | 8/10 | 9/10 |
+| `sample 13-scanned` | **20/20 exact, including the printed Grand Total (512)** | 16/20 | 16/20 |
+| `sample 4-scanned` | rows 1-3 exact (8 cells each); row 4 exact at 3 cells — but at columns 65/75/85, not the 60/70/80 the 2026-09-04 entry recorded (re-verified against the photo directly, this run's reading is correct, the recorded one was one column off); rows 5-7 read 7-of-8 cells, consistent with "close"; row 8 both column-shifted and over-read (8 cells at 45-80 vs. 7 real marks at 55-85); rows 9-10 over-read (11 cells vs. ~8 visible); row 12 still dropped entirely | 5 exact, 2 shifted, 3 close, 1 unresolved | 5 exact, 2 plausible, 1 close, 3 blank, 1 unresolved |
+
+Wall-clock: 12-100s per image, one call — same ballpark as glm-ocr's
+single-crop time, well under the prior LightOnOCR-2 approach's "multiple
+calls over minutes."
+
+**`sample 4-scanned` is still the one form where this doesn't clearly
+win.** Every other test form went from "close but imperfect" to exact.
+On the hardest form, real errors remain mid-table (rows 8-10) — the
+single wide crop doesn't get the same benefit from crop-edge isolation
+that the per-row overlapping-crop approach exploited (see 2026-09-04's
+"crop-edge effect" finding), and this run didn't cross-check overlapping
+crops against each other the way that entry did. Row 12 is dropped by
+every method tried across both entries now — six independent attempts,
+still zero full readings.
+
+**Standing recommendation updated, still not decided or built:**
+single-table-crop LightOnOCR-2 with `num_ctx` explicitly raised looks
+like the strongest of the three OCR candidates evaluated so far on 3 of
+4 test forms (beats both glm-ocr and its own prior per-row approach,
+sometimes to a perfect score) — genuinely surprising given the
+2026-09-04 entry's read that glm-ocr had the edge for the general case.
+`sample 4-scanned` remains the one form to solve separately. Open for
+next time:
+- Whether glm-ocr's own single-crop result also improves with any
+  analogous context-window setting — not re-tested here, since the
+  num_ctx fix was found via LightOnOCR-2's specific truncation symptom.
+- Re-running the per-row overlapping-crop approach for `sample 4-scanned`
+  specifically, now with `num_ctx` also raised there, to see whether the
+  context-window fix (rather than the crop strategy) was the load-bearing
+  change all along.
+- This is still four forms, ad hoc, hand-verified against the photo by
+  eye — not a benchmark, and not wired into any pipeline file.
+
+## 2026-09-05 — LightOnOCR-2 wired in as the default hybrid-quantities backend; four real quirks found and fixed; letter sizes still open
+
+Direct continuation of 2026-09-04's evaluation. Built two new files —
+[hybrid_quantities_lighton.py](hybrid_quantities_lighton.py) (the
+LightOnOCR-2 backend, same `(image_path, extracted, outdir) ->
+(quantities_by_index, flags)` contract as `_hybrid_ocr_quantities`) and
+[compare_hybrid_backends.py](compare_hybrid_backends.py) (runs mistral's
+main call ONCE, then both backends against the identical skeleton, so a
+diff is the backend, not sampling noise between two separate mistral
+calls) — then, on direct instruction, made LightOnOCR-2 the default via
+`extract_one()`'s new `use_lighton_hybrid` parameter (`--no-lighton-hybrid`
+reverts to the previous PaddleOCR backend, which remains fully
+maintained). CLAUDE.md's "Hybrid quantity correction" section carries the
+current-state summary; this entry is the narrative of how it got there.
+
+### Bug 1: multi-`<table>` full-page output grabs the wrong header/body
+
+First version of `_find_item_table` took the first `<thead>`/`<tbody>` in
+the whole document. On a full-page (no-crop) call, LightOnOCR-2
+transcribes the letterhead as its OWN separate `<table>` blocks BEFORE the
+real item table (confirmed: `sample 4-scanned`'s response had 3 separate
+tables — a "Party Name" mini-table, a "LORRY/Booking Station" mini-table,
+then the real grid) — so the first version silently grabbed the Party
+Name mini-table's header/body and skipped the real one on 2 of 4 test
+forms. Fixed by scoring every `<table>` block by how many known
+`size_headers` its own header row(s) contain, using the best-scoring
+block for both columns and its own tbody rows.
+
+### Bug 2: two-line header cells
+
+A header cell is sometimes one `<th>` with a `<br>` inside (`45<br>18`,
+main size over its dozen-equivalent alt number) rather than two separate
+header rows — survives `_cell_text`'s `<br>`-to-space normalization as
+`"45 18"`, which never equals `size_headers`' plain `"45"` on a
+whole-string match. Fixed by also matching the first whitespace-separated
+token of a header cell.
+
+### SIZE LABEL OVERRIDE / LETTER SIZES parsing (`_parse_cell`)
+
+Ported extract_claude.py's own SIZE LABEL OVERRIDE / LETTER SIZES prompt
+rule to LightOnOCR-2's transcription: a cell holding a tiny handwritten
+size label (a number past the printed grid, or a clothing letter) stacked
+over its own quantity survives `<br>`-normalization as a two-token cell
+(`"105 10"`, `"M 5"`); `_parse_cell` splits it and uses the label actually
+written as the dict key instead of the printed column position.
+`_reconcile_hybrid_with_vlm` already knew what to do with a hybrid_map key
+outside `size_headers` (trust it wholesale) — no change needed there.
+
+Confirmed on `sample 5-scanned`'s "Fairlady Print" row (printed grid stops
+at 105, product needed sizes 105 and 110 too): recovered `105:10` cleanly,
+but `110:10` was still missing at first — that column is the page's
+"Total Dozen" slot, repurposed as an ad hoc size-110 column, which sits
+OUTSIDE every matched header column, so the original per-row-only override
+scan never even looked at it. Fixed by scanning every column from the
+first size header onward, not just matched header columns — an override
+cell is self-labeled and can sit anywhere.
+
+Still missing on the row directly below ("Fairlady Plain"): its own
+overflow cell is a BARE `"10"`, no label at all — the tiny label is
+written once per page, on the first row that needs the repurposed column,
+and later rows reusing the same physical column just write the bare
+quantity (the same "write it once, ditto after" convention these forms
+already use for item names). Fixed with a page-level pass:
+`resolved_override_col` scans every aligned row's unmapped columns first,
+so a label seen on ANY row resolves that column for every row on the
+page. Confirmed: both Fairlady rows now read `105:10, 110:10` correctly.
+
+### Bug 3: a trailing "Grand Total" row forces fragile fuzzy-match alignment (the real bug behind "sample 4 has so many ones which might be confusing, but sample 3 results are not good")
+
+The blank-row filter checked whether EVERY cell in a row was empty. A
+page's own trailing summary row (blank item name, blank size cells, but a
+real number in the Total column) survives that check, making
+`len(data_rows)` one MORE than `len(item_names)` even when every real row
+parsed perfectly cleanly. That forces `_align_rows_to_items`'s fuzzy
+name-matching fallback instead of a clean 1-to-1 positional match — and
+on `sample 3-scanned` (20 items, most named "... full Pant", genuinely
+hard to fuzzy-distinguish), that fallback actually scrambled two
+unrelated rows' assignments. Confirmed directly: the raw LightOnOCR-2
+response for row 0 was CORRECT (`3,3,3,3,3,3,3,2`, matching the photo
+exactly) — the code just handed item 0 a completely different row's data.
+
+Fixed in two shapes, since the summary row isn't always blank-labeled:
+`sample 3-scanned`'s has an empty item-name cell; `sample 13-scanned`'s
+uses `colspan="16">GRAND TOTAL` as literal label text (TD_RE still
+captures it as one cell). `_is_summary_row` now checks BOTH: no real data
+in any matched size column, AND (blank label OR the label text itself is
+"GRAND TOTAL"/"TOTAL"/"TOTALS"). Confirmed via `compare_hybrid_backends.py`:
+sample 3's agreement recovered from a scrambled ~7/20 to a clean 20/20
+"rows found" count matching item count exactly; sample 13 (which had the
+same latent bug in the colspan shape, just not yet visibly triggering it)
+also dropped from "21 rows found" to the correct "20." No regression on
+any of the 4 original test forms.
+
+### Struck-out rows: direct signal beats the blank-quantities/blank-total proxy, until it doesn't either
+
+First version forced a row's hybrid reading to empty whenever mistral
+reported neither quantities nor a row total — the same model-agnostic
+"possibly void" proxy `_hybrid_ocr_quantities` already uses (see
+`_realign_row_clusters_by_total`'s own docstring). Produced a real false
+positive during testing: on `sample 13-scanned`, "B 4457 COLLAR" came
+back with empty quantities/total for ONE run (a documented, known
+non-determinism, not an actual strike-through) and the fix discarded a
+LightOnOCR-2 reading that PaddleOCR's own independent pass confirmed was
+correct.
+
+Fixed by threading mistral's own DIRECT `struck_out` flag through from
+`extract_one()` as `struck_out_hints` (same pattern as the existing
+`letter_size_hints`), instead of the blank-quantities proxy. But
+`struck_out` itself then ALSO proved unreliable on a real row: confirmed
+by zooming into the photo, "B 4457 COLLAR" has no strike-through at all —
+a normal row with a clean printed total (51) matching its own quantities
+exactly — yet mistral reported `struck_out=True` for it. Since both
+failure directions are real (silently keeping a genuinely cancelled row
+ships an unwanted order; silently zeroing a real one ships an order
+short), the final behavior is: a `struck_out`-flagged row with NO
+LightOnOCR-2 reading stays silently empty (the ordinary, expected shape
+of a real cancelled row); a `struck_out`-flagged row where LightOnOCR-2
+still found a substantial reading is FLAGGED for a human instead of
+silently decided either way, keeping the reading (not discarding it) —
+an extra row is a one-click delete, a silently-dropped real one is much
+harder to notice. Verified this specific branch with a synthetic test
+(reproducing the exact flake on demand isn't reliable).
+
+### Letter sizes: confirmed unfixable by prompting, a real fix found and reverted for cost
+
+`sample 3-scanned`'s "MM K4532" row uses letter sizes (S/M/L/XL/XXL
+stacked over a digit, all quantities = 6, printed total 30) — a
+completely different shape from anything else on the page (contrast with
+the SIZE LABEL OVERRIDE case above, which is two NUMBERS stacked, the
+same shape as the header row's own two-number convention every column on
+the page already uses). Two things confirmed by direct testing, not
+assumed:
+
+1. **Prompting LightOnOCR-2 to preserve the label doesn't work.** Added an
+   explicit instruction ("if a cell has a small handwritten size label...
+   write both the label and quantity separated by a space") and re-ran on
+   the real photo — still came back as plain digits (`3,6,6,6,6,6`),
+   label dropped entirely. Not an instruction-following gap; the model
+   just doesn't reproduce this specific visual shape regardless of what
+   it's told, plausibly because nothing else on the page has established
+   a "letter-over-digit" pattern the way the header row establishes
+   "number-over-number."
+2. **Mistral's own `letter_sizes` flag also doesn't fire for this row.**
+   Confirmed via 5 fresh live calls, all `letter_sizes=False` — consistent
+   with an already-existing, independently-documented finding in this
+   same codebase (`MISTRAL_PROMPT_ADDENDUM_BASE`'s own comment records a
+   dedicated prompt bullet tried specifically for this row and reverted
+   2026-09-02, confirming "the crop-based recovery mechanism itself...
+   is confirmed working correctly WHEN the flag fires... the model just
+   isn't setting it on this specific row in practice").
+
+Given (2), reusing PaddleOCR's own already-tuned pixel-level recovery
+(`_recover_letter_size_row_digits` — a per-column, y-offset-swept re-OCR
+specifically built and tested against this exact row) needs a trigger
+that isn't mistral's flag. Tried: union `letter_size_hints` with a
+code-derived signal — any row where LightOnOCR-2's own reconciled reading
+doesn't sum to its own printed total. **Confirmed working**: forcing the
+condition synthetically (a live run won't reliably reproduce mistral's
+own non-determinism on demand) triggered the recovery correctly and
+returned letter-keyed `{'L': 4, 'XL': 6, 'XXL': 6}` — real letters, not
+wrong-numeric-keys, though still incomplete (2 of 5 columns, S and M,
+still unrecovered) and honestly flagged as `unresolved` rather than
+silently wrong.
+
+**Reverted the same day.** A first attempt used "any mismatch" as the
+trigger and would have paid PaddleOCR's real ~20-40s whole-page pass
+(measured from this project's own usage log) on nearly every form tested.
+Narrowed to "mismatch larger than 2" (reusing the identical severity
+threshold `_flag_hybrid_total_mismatch`'s own caller already uses to
+distinguish "probably a single-digit misread" from "something structural")
+— still not narrow enough: a live run fired it on 4 unrelated rows of
+`sample 5-scanned`, a form with no letter-size row at all, because a large
+sum mismatch turns out to correlate with ordinary column-shift misreads
+just as much as with a genuine letter-size row. That defeats the reason
+the backend swap happened in the first place, so on direct instruction
+this was reverted to gating on `letter_size_hints` alone — `sample 3`'s
+MM K4532-shaped rows stay unresolved (mistral practically never flags
+them) rather than fixed, in exchange for keeping LightOnOCR-2's latency
+advantage intact everywhere else.
+
+**Kept alive, not dropped, for next time**: a cheaper, genuinely targeted
+pre-check — a lightweight letter-detection-only scan at just a suspect
+row's own position, decided BEFORE ever committing to the full expensive
+`_hybrid_ocr_quantities` path — would be the way to recover this specific
+row without paying the cost everywhere else. Not yet built. Testing
+planned for the following week.
+
+### party_name fabrication on a non-"Party Name"-box template
+
+Separately, on `sample 12-scanned.jpg` (a non-ESSA "To"/"From" order pad
+with no labeled "Party Name" box at all — printed on "G. N. Gupta &
+Company"'s own stationery), mistral's `party_name` came back as
+"Fruitshop" — flagged correctly by the existing party-name cross-check
+(`brandlist_match.resolve_party_name`) as unmatched against the buyer DB,
+but the value itself turned out to be a fabrication: zoomed into the
+photo directly, nothing resembling "fruit" appears anywhere on the page.
+Reproduced 3 more times at temperature 0: "Fruitwala", "Fruitwala",
+"Fruitful" — a consistent fruit-shop-themed hallucination, not random
+noise.
+
+Root cause: `extract_claude.py`'s shared SELLER vs BUYER prompt rule only
+described ESSA's own "Party Name" box layout ("the name handwritten in
+the 'Party Name' box further down the page"). This template has no such
+box — with nothing matching what it was told to look for, mistral
+apparently defaulted to inventing a plausible-sounding small-business name
+rather than reporting "not found." Fixed by adding an explicit clause for
+the To/From layout (read the "From" field) and explicitly forbidding
+invention when nothing is legible. Verified: 3 fresh calls post-fix are
+consistent, no more fabrication, correctly reading the "From" field's
+actual handwritten text ("Bhagwati Readymade Chestergarh") — though
+zooming into the handwriting directly shows the real text is "Rajasthan
+Readymade" / "Chittorgarh" (a real Rajasthan city), so the fix closed the
+fabrication bug specifically, not the separate, much more ordinary
+cursive-handwriting-legibility problem underneath it. Regression-checked
+two standard ESSA-template forms (which DO have the Party Name box) —
+both still read correctly, unaffected by the new clause.
+
+## 2026-09-07 — item-name and party-name "meaningful name" fabrication found on `sample 3-scanned.jpg`, fixed in the shared prompt
+
+A different, related failure mode from the "Fruitshop" party-name
+fabrication above — not inventing a name from nothing, but **rewriting
+illegible-but-present handwriting into a real, plausible-sounding word
+instead of transcribing (or honestly failing to read) what's actually
+there.** Found by comparing mistral's saved output for the most recent
+UI review session against `sample 3-scanned.jpg`
+(`ui_sessions/2d65307928ab/`) directly against the photo:
+
+| row on the form (my own read of the handwriting) | mistral's `item` output |
+|---|---|
+| `B 5109 3/4 set` | `B 5103 Sluset` |
+| `B-5111 3/4 set` | `B-5111 Sluset` |
+| `B 5102 3/4 set` | `B 5102 Sluset` |
+| `Salwo PaBoy full Pat` | `Salwar Plain Full Patt` |
+| `EitfoxE full Pat` | `Elf Size Full Patt` |
+| `Nivi Grock RNBS` | `NIV Crack RNBS` |
+| `MM K 3674 RNBS T.shirt` | `MM K 3674 Patti Set` |
+
+The `Sluset` case is the clearest single piece of evidence: the same
+handwritten "3/4 set" appears on three separate rows and got turned into
+the identical fabricated word all three times — a consistent
+normalization pattern, not independent misreads. `extract_claude.py`'s
+shared `SYSTEM_PROMPT_TEMPLATE` told the model to reproduce the
+Particulars/party-name text "exactly as written" but never explicitly
+forbade the specific failure of *improving* illegible marks into a real
+dictionary word — the same gap-in-instruction shape as the "Fruitshop"
+bug above, just for a different field.
+
+**Fix:** two new prompt rules added to `SYSTEM_PROMPT_TEMPLATE`
+(`extract_claude.py`, shared by both `extract_claude.py` and, via
+import, `extract_ollama_cloud.py`'s mistral prompt — no separate
+mistral-only addendum needed):
+- **ITEM NAME — TRANSCRIBE, DO NOT "IMPROVE"**, immediately before the
+  DITTO MARKS rule: forbids expanding an abbreviation, correcting
+  spelling, reordering words, adding a word that isn't there, or
+  otherwise rewriting Particulars text into a more "proper" or
+  "meaningful" product name, with the `Sluset`/`Trnk`-style examples
+  spelled out directly; ditto-mark expansion remains the one allowed
+  exception.
+- A parallel sentence appended to the end of the SELLER vs BUYER
+  section: `seller_name`/`party_name` are transcribed, not "improved,"
+  with an example (`"M.K Enterprises"` must stay exactly that, never
+  normalized to `"M.K. Enterprises"` or `"MK Enterprises"`).
+
+**Partial confirmation from the `minimax-m3` re-evaluation directly
+below (same prompt, different model, same form):** the "3/4 set" text
+came back transcribed verbatim (not `Sluset`), and the `MM K 3674` row
+read `RNBS T-Shirt` — close to the real handwriting — instead of the
+invented `Patti Set`. Not a controlled A/B (different model, and
+mistral itself hasn't been re-run against this exact form since the
+prompt change), but directionally consistent with the fix working as
+intended. **Not yet regression-checked with a fresh live mistral call on
+`sample 3-scanned.jpg`** — that's the real confirmation still needed
+before calling this closed.
+
+## 2026-09-07 — `minimax-m3` re-evaluated with real extraction calls, not just the vision sanity check: promising on an easy form, fails hard on a dense one
+
+The 2026-08-11 "Full Ollama Cloud model survey" (see above) ruled
+`minimax-m3` out on a cheap synthetic test — a solid red square, asked
+to name the color — which it answered wrong (`"Gray"`). Re-ran the exact
+same test today: wrong again, a *different* wrong color this time
+(`"Blue"`). Two wrong colors on two separate runs is a real, repeated
+signal the model's vision path has some kind of problem — but per this
+project's own established practice (a cheap synthetic probe is not the
+real task), the user asked to run it against real order-form photos
+before ruling it out on that basis alone. Ran all three of this
+project's own canonical regression forms (`extract_ollama_cloud.py
+"Images/<form>" --model minimax-m3 --no-brandlist-check --outdir
+extracted_minimax_test`), comparing each `.raw.json` (the pre-hybrid
+main-call reading) against the established mistral baseline in
+`extracted_regress/`:
+
+- **`sample 5-scanned.jpg` (moderate difficulty): genuinely competitive.**
+  13/14 item names correct (one row mislabeled `Bloomer Plain`,
+  duplicating the row above, where mistral correctly read
+  `Bloomers Print`); 69/71 quantity cells identical to mistral's own
+  reading, including every one of the harder Fairlady-row cells that
+  extend past the form's own printed header (`105`, `110`). The one
+  differing cell (`MYNA` / `OE` / size `100`) is arguably a mistral
+  *loss*, not a minimax error: minimax read `13`, matching the value
+  this file's own earlier Claude-vs-Ollama comparison already confirmed
+  correct; the saved mistral baseline's `3` is the wrong one. Call
+  latency 13.0s for the main call, 47.3s wall time total — faster than
+  mistral's typical ~30-45s.
+- **`sample 13-scanned.jpg` (dense, 20 size columns): a real, repeatable
+  quantity-reading failure.** Item names/style codes: 20/20 exact match
+  against the mistral baseline, so the model's structural reading of
+  even this hard form is not in question. But the main call returned
+  **all-zero quantities across all 20 rows, twice in a row** — the
+  pipeline's existing "known flake" retry (`MAIN_CALL_MAX_RETRIES = 1`)
+  fired and hit the identical all-zero result both times. Every one of
+  the 138 filled cells in the final output came entirely from the
+  independent LightOnOCR-2 hybrid pass; minimax's own vision contributed
+  nothing to a single number on this form. This is the same failure
+  signature this file already documented for `qwen3.5:397b`
+  ("zero-quantity failures on hard forms," 2026-08-13 section above) —
+  a model that reads layout/text fine but can't reliably read a dense
+  quantity grid, not a one-off.
+- **`sample 3-scanned.jpg` (hard, non-uniform layout): a different
+  failure shape again.** The main call flaked all-zero on attempt 1, then
+  recovered real quantities on attempt 2 (unlike `sample 13-scanned`,
+  where both attempts flaked) — so the retry mechanism earns its keep
+  here. But two separate new problems appeared: **only 18 of the form's
+  20 items were returned, with the last two rows (`MM Looper 4289`,
+  `NIV Crack RNBS`) dropped entirely** — not misread, simply absent from
+  the output, the same "completeness near the bottom of the page"
+  weakness `MISTRAL_PROMPT_ADDENDUM_BASE` already has a bullet warning
+  mistral about (`extract_ollama_cloud.py`), evidently not
+  mistral-specific; and **`order_date` came back `31/03/2016`, not the
+  form's actual `31-03-2026`** — a wrong-by-a-decade date error with no
+  `date_present`-style safety net available for this model (that field
+  is mistral-schema-only). `party_name` was also badly garbled
+  (`"A.T Diddahally katta's HYDRA ROAD"` for what reads as a
+  distributor's name plus "HYDERABAD" on the real form).
+
+**Verdict: not a viable replacement for `mistral-large-3:675b`, and not
+adopted.** It is occasionally more accurate than mistral on individual
+cells when it produces real output, but it fails in three ways mistral
+in production does not: a genuine zero-output quantity flake on dense
+tables (not just occasional drift — a documented *total* miss, twice),
+silently dropped rows near the bottom of a hard form, and a wrong-decade
+date misread with no schema-level safety net to catch it. Any one of
+these reaching a reviewer unflagged is a worse outcome than mistral's own
+known, already-documented limitations. Kept as a negative result, same
+as the earlier `kimi-k2.6`/`qwen3.5:397b` verdicts — **do not re-attempt
+`minimax-m3` as the default without a genuinely new reason to expect the
+zero-output flake and completeness gap are fixed**, per this project's
+own established standard for closing off a tried-and-rejected model.
+Scratch outdir `extracted_minimax_test/` from this comparison left in
+place pending cleanup.
+
+## 2026-09-07 — `minicpm-v4.6` (local Ollama pull) tested and rejected — fails to complete the main extraction task at any context size tried
+
+Pulled `minicpm-v4.6` (1B params, 1.6GB, local) to check whether a small
+edge vision model could do this task at all. Passed the basic color-
+identification vision sanity check. **Failed outright on the actual task**:
+run through the real production pipeline (`extract_one()`, local client
+swapped in for the cloud one, mistral-schema JSON-constrained main call)
+against `sample 5-scanned.jpg` — the easiest form in this project's test
+set — the main call hit `done_reason=length` at only ~425 output tokens
+with local Ollama's default context window. Raising `num_ctx` to 16384
+let it generate further (12.7k tokens) but it still filled the window
+without finishing; raising to 40000 with the full `MAX_TOKENS=32000`
+generation budget, it **burned the entire budget over 353 seconds and
+never produced a parseable result at all** — not a context-window bug to
+route around, the model is fundamentally undersized for this dense a
+schema-constrained task regardless of how much room it's given. mistral
+finishes the same form in 13-45s. Ruled out; model removed from local
+Ollama afterward.
+
+## 2026-09-07 — `datalab-to/chandra-ocr-2` (via `hf.co/mradermacher/chandra-ocr-2-GGUF`, local, free) evaluated as a candidate model — strong, comprehensively-verified accuracy; real integration work still unbuilt
+
+User asked to try the real Datalab Chandra-OCR-2 model (not the random,
+unverified community re-uploads found under `ollama.com`'s own library
+search — user explicitly redirected away from those to the actual
+HuggingFace source). Real model: 5B params (`chandra-ocr-2`, Qwen3.5-
+based per `ollama show`'s `architecture: qwen35`), purpose-built for
+document OCR (markdown/HTML/JSON output, layout-preserving), distinct
+from the larger 9B `datalab-to/chandra` (Qwen3-VL based, no official GGUF,
+needs vLLM/transformers + a real GPU this project's 8GB RTX 3050 can't
+comfortably run). `mradermacher/chandra-ocr-2-GGUF`'s `Q5_K_M` quant
+(3.9GB) + auto-attached `clip` vision projector pulled cleanly via
+`ollama pull hf.co/mradermacher/chandra-ocr-2-GGUF:Q5_K_M` — Ollama's own
+HuggingFace-GGUF pull path, confirmed to auto-detect and attach the
+paired `mmproj` file with zero manual Modelfile work needed. Passed the
+solid-red-square vision sanity check ("dark red").
+
+**Everything below lives in ad-hoc scratch scripts outside this repo,
+not committed anywhere — nothing here is wired into `extract_ollama_cloud.py`,
+the review app, or any file under version control.** A standalone
+`chandra_parser.py` was built to convert Chandra's own native bbox-
+annotated-HTML output into this project's `ExtractedForm` shape.
+
+### Schema-constrained approach: tried, made things WORSE, abandoned
+
+Forcing Chandra through `extract_ollama_cloud.py`'s exact Pydantic
+JSON schema (`format=`, the same mechanism mistral goes through) badly
+degraded its output on `sample 4-scanned.jpg`: it stopped separating the
+form's two header rows and produced compound size keys (`"85 34"`
+instead of `"85"`), wrote the literal header label `"Total Dozen"` into
+every row's `type` field, and duplicated a footer-row confusion into two
+spurious items. A follow-up attempt to fix this by ADDING more explicit
+prompt instructions (a `MODEL-SPECIFIC GUIDANCE` addendum, mirroring
+`MISTRAL_PROMPT_ADDENDUM_BASE`'s own successful pattern for mistral) made
+it categorically worse: with hybrid quantities disabled to see the main
+call's own reading directly, every row collapsed into a uniform "fill
+every column with quantity 1" pattern — not an improved reading, a
+degenerate template satisfying the schema's shape without doing real
+per-cell OCR. **Conclusion: prompting can't fix this, because the
+problem isn't instruction-following, it's the schema constraint itself
+fighting Chandra's native training** (it was trained to emit its own
+HTML/bbox format, not an arbitrary externally-imposed JSON shape).
+Abandoned this direction entirely in favor of the native-format approach
+below — not revisited.
+
+### Native-format approach: the one that works
+
+Simple unconstrained prompt ("Extract this order form as markdown,
+preserving the table structure exactly"), no schema constraint. Two real
+quirks found along the way:
+- Output lands in the Ollama response's `.thinking` field by default,
+  not `.content`, when `think` isn't explicitly passed (a qwen3.5 chat-
+  template routing quirk, not a real hidden reasoning phase — confirmed
+  below under "speed" that `think=False` moves it to `.content` with
+  zero change in token count or generation time).
+- Local Ollama's default context window is far too small for this
+  pipeline's output length (same generic gotcha this project already
+  hit once with a different local model, `olmocr2`, per that section
+  above). Fixed by setting `num_ctx=16384` and `num_predict=-1`
+  (uncapped, bounded only by context — mirroring the exact working
+  pattern `hybrid_quantities_lighton.py`'s own `_call_lighton` already
+  uses), sized generously based on this form's own printed density
+  rather than guessed conservatively and re-run after truncating.
+
+`chandra_parser.py` needed two real fixes as more form templates were
+tried, each one a genuine bug the previous form(s) hadn't exposed:
+1. **Hardcoded 2-column assumption** (`Particulars`/`Style` before the
+   size grid) silently mis-shifted every item name on
+   `sample 13-scanned.jpg`, which has 3 leading columns
+   (`Sr. No`/`Article Name`/`Style`) — fixed by dynamically counting
+   leading non-numeric header columns per form instead of hardcoding.
+2. **Single-`<table>` assumption** broke entirely on `sample 3-scanned.jpg`
+   (`n items: 0`): Chandra split ONE visual table into two separate
+   `<table>` elements in its own output — the header row in its own
+   `<table><thead>` with no `<tbody>`, the actual item rows in a second,
+   separate `<table><tbody>` immediately after with no `<thead>` of its
+   own, matching this exact form's own irregular layout (its last rows
+   are squeezed into a non-ruled area near the footer, already
+   documented elsewhere in this file). Fixed by concatenating every
+   `<table>` block in the document before parsing, not just the first.
+
+### Full accuracy verification — 8 things confirmed, all with real evidence, not assumed
+
+1. **`sample 5-scanned.jpg`** (moderate): raw native reading matched
+   mistral's baseline on 12/14 rows exactly; run through the real
+   `extract_one()` pipeline with LightOnOCR-2 hybrid layered on top
+   (client swapped to local, no cloud host), **13/14 rows came out
+   clean and cross-validated** (11 exact-agreement rows plus 2 rows
+   where hybrid silently corrected Chandra's own overflow-column
+   mis-slot to values matching the ground truth exactly) — only the one
+   genuine unresolved disagreement (`MYNA`/`IE`/size `80`) correctly
+   flagged for a human, zero rows silently wrong.
+2. **`sample 4-scanned.jpg`** (hardest — the form whose near-total OCR-
+   detection blindness makes today's production coverage guard flag
+   EVERY row unverified with zero auto-cleared, per this file's own
+   2026-09-03 section): Chandra+LightOnOCR **auto-cleared 4 of 13 rows
+   correctly** (3 independently confirmed by zooming into the actual
+   photo) and correctly flagged the remaining 7 genuinely-disputed rows
+   — a real, measurable improvement over "everything unverified." One
+   pathological case (the last item squeezed into the footer next to
+   "Stock Entry By") loses data in reconciliation that Chandra's raw
+   reading alone had — not a regression, since that exact row is already
+   broken in today's production output too (mistral returns it empty).
+3. **`sample 2.jpeg`** (free-form, no shared header): **12 of 12 items,
+   every quantity pair, matched the mistral baseline exactly** —
+   including the one tricky value (`110:10`, a size with no printed
+   column to be "past" on this layout at all). Also confirmed the
+   documented diary-page date-fabrication test case on this same
+   image (`"MONDAY"` pre-printed, mistral originally fabricated
+   `"10/06/2024"` here 3 times in a row): Chandra captured "MONDAY" as
+   plain text and invented no date at all.
+4. **`sample 13-scanned.jpg`** (densest — 20 size columns, a different
+   non-ESSA "NDTEX ESSA" booking-agent letterhead never tested before):
+   **17 of 20 rows' own sums exactly matched their independently-
+   printed row totals** (confirmed real, not self-consistency — the
+   printed total comes from a different part of the page than the
+   quantity cells), 20/20 item names/style codes correct once the
+   parser's column-offset bug above was fixed. The 3 mismatched rows
+   were confirmed via zooming into the actual photo to be genuine small
+   Chandra misreads (off by 1-3 tally marks each), not ground-truth
+   ambiguity.
+5. **`sample 3-scanned.jpg`** (the item-name fabrication test — the form
+   this same session's earlier prompt fix targeted, where mistral
+   invented `Sluset`/`Patti Set`/`Elf Size`/`Crack` for illegible
+   handwriting): **0 of 4 of mistral's specific fabrications were
+   reproduced.** All three `"3/4 set"` rows came back transcribed
+   verbatim; `MM K 3674` read `"RNBS T Shirt"`, matching this session's
+   own earlier zoom-verified ground truth almost exactly, instead of
+   mistral's invented `"Patti Set"`. Also confirmed the documented real
+   struck-out row on this exact form (`"Super Boy 3/4"`, a genuine line
+   through the entire row — see this file's 2026-09-01 struck-out
+   section): Chandra's own reading already came back with empty
+   quantities for it, correctly, with no special mechanism needed. One
+   real open concern: `order_date` read `31-03-2016`, not the actual
+   `31-03-2026` — **the exact same wrong-decade misread `minimax-m3`
+   independently made on this same form** (see that section above).
+   Two unrelated models making the identical specific error is worth
+   a closer look at the print quality on that date field itself, not
+   yet done. Party name also remains unresolved/garbled across every
+   model tried on this form so far. The letter-size row (`MM K4532`)
+   came back an incomplete read — still unsolved, but no model tried in
+   this entire project handles it either (mistral practically never
+   even flags it, per this file's own documented finding), so this is
+   a shared gap, not a new one.
+6. **Brandlist DB cross-check compatibility**: Chandra's parsed output
+   ran through `brandlist_match.annotate_and_resolve()` (real DB
+   connection) with zero compatibility issues — real catalog matches
+   with good scores (e.g. `"Fairleady Print"` → `FAIRLADY PRINT`,
+   score 96.6, the fuzzy matcher absorbing Chandra's own minor
+   misspelling fine).
+7. **Non-ESSA To/From template** (`sample 12-scanned.jpg`, `G. N. Gupta
+   & Company`'s own pad — the other documented party-name-fabrication
+   template, distinct from sample 3): Chandra kept the "From" field
+   (the real buyer, per this project's own prompt rule) structurally
+   separate from the "To" field in its own bbox output, read it as
+   `"Rajasthan Pechinade"/"Chittagangh"` — close to, not identical to,
+   the real handwriting (`"Rajasthan Readymade"/"Chittorgarh"` per this
+   file's own zoomed ground truth) — matching the ALREADY-FIXED
+   mistral behavior (an ordinary cursive-legibility miss) rather than
+   the original `"Fruitshop"`-style fabrication-from-nothing bug. 10/10
+   row totals matched the photo exactly.
+8. **Repeat-run stability**: `sample 5-scanned.jpg` run 3 separate times
+   (1 original + 2 repeats) and `sample 4-scanned.jpg` run 2 separate
+   times, all at `temperature=0` — **byte-identical output every time**,
+   confirmed via direct diff, including across a run where `num_ctx`/
+   `num_predict` were set differently between calls. Fully deterministic
+   on both forms tested.
+
+### Timing: real, not favorable
+
+Pulled 343 logged real historical mistral calls from
+`usage_log_ollama_cloud.csv` for the same 6 forms and compared against
+Chandra's own measured single-call times:
+
+| form | Chandra (1 call, no hybrid) | mistral main call only | mistral FULL pipeline (main+hybrid+brandlist) |
+|---|---|---|---|
+| sample 2 | 44.8s | ~15s | ~18-24s |
+| sample 5 | 47-57s | ~21s | ~54-59s |
+| sample 4 | 47-54s | ~22s | ~42-52s |
+| sample 12 | 55.3s | ~16s | ~26-42s |
+| sample 3 | 73.1s | ~32s | ~63-74s |
+| sample 13 | 93.9s | ~38s | ~54-81s |
+
+Chandra is consistently 2-3x slower than mistral's single main call
+alone, and slower than mistral's ENTIRE production pipeline (3 real
+steps: main call + hybrid quantity re-read + brandlist DB check) on 4 of
+6 forms — despite Chandra's own numbers above being for one unaided call
+with no correction layer at all. Layering LightOnOCR hybrid on top of
+Chandra (as tested for sample 4/5) pushed sample 4's total wall time to
+121.6s, past mistral's entire pipeline for that same form.
+
+### Speed optimization attempts — none worked
+
+- **Flash attention** (`OLLAMA_FLASH_ATTENTION=1`, required a full local
+  Ollama service restart — confirmed with the user first since it's a
+  shared service, not scoped to this experiment): no measurable
+  speedup (54.4s vs. the existing 47-57s range, within normal
+  run-to-run noise). Content confirmed byte-identical via diff, so at
+  least harmless — left enabled (persistent user env var) since it cost
+  nothing, but does not explain or fix Chandra's latency gap.
+- **Lower quantization** (`Q4_K_M`, 3.4GB vs. `Q5_K_M`'s 3.9GB): a real
+  regression, not just slower. On `sample 5-scanned.jpg` it took LONGER
+  (61.6s) and produced MORE output tokens (2898 vs. 2314) while
+  generating zero real data — inspecting the raw output showed it stuck
+  in a repetition loop, regenerating the same ~600-token planning
+  preamble ("I will use a table with borders...") roughly 5 times over
+  without ever producing the actual table. A qualitative failure mode,
+  not marginal degradation — ruled out immediately, no reruns needed to
+  confirm. Model removed from local Ollama afterward.
+- **`think=False`**: confirmed there was never a separate hidden
+  reasoning phase — explicitly setting it moved the identical output
+  from `.thinking` to `.content` (same 2314 eval tokens, same ~50-56s)
+  with zero speed change. Useful to know for any real integration
+  (need to read the right field), but not a speed lever.
+
+**Net: `Q5_K_M` at ~45-94s per form, scaling with table density, appears
+to be close to this GPU's real ceiling for this model** — every lever
+tried either did nothing or made things worse.
+
+### Overall verdict
+
+**Not adopted, not integrated — but a genuinely strong, comprehensively-
+verified candidate, unlike every other model tried this session
+(`minimax-m3`, `minicpm-v4.6`).** Six of eight things worth confirming
+came back clean passes (dense grid, fabrication resistance, date-guard,
+struck-out handling, brandlist compatibility, non-ESSA template,
+repeat-run stability — letter-size resolution remains an open gap
+shared by every model in this project, not a Chandra-specific one). The
+real open question is no longer accuracy — it's engineering: no
+`extract_one()`-compatible module exists, no retry/error handling, no
+test of concurrent usage on the shared 8GB GPU (this machine's LightOnOCR-2
+and the local qwen2.5vl pipeline already share this same GPU), and the
+parser itself had two real bugs found across just 6 forms tested —
+a 7th form would plausibly find a third. And it is meaningfully slower
+than mistral's entire production pipeline, not just its main call, with
+no speed lever tried this session actually closing that gap. Whether
+that tradeoff (free + locally verified strong accuracy, vs. real latency
+cost + unbuilt integration) is worth pursuing further is a decision still
+open, not yet made.
+
+## 2026-09-08 — Chandra wired into the real pipeline as `--model chandra`: a new `chandra_parser.py`, `extract_one()` branch, CLI/review-app model selection
+
+User asked to pick the previous session's evaluation back up and actually
+integrate it, per that section's own closing line ("if picked up again:
+start from HISTORY.md's write-up, not from scratch"). Confirmed the
+model was still pulled locally (`ollama list` showed
+`hf.co/mradermacher/chandra-ocr-2-GGUF:Q5_K_M`, 3.9GB) before starting.
+
+### What got built
+
+- **[chandra_parser.py](chandra_parser.py)** (new file) — `call_chandra()`
+  (the unconstrained "Extract this order form as markdown, preserving the
+  table structure exactly" call, `num_ctx=16384`/`num_predict=-1`/
+  `think=False`, same usage-dict shape as `_call_schema` so the existing
+  logging call sites needed no change) and `parse_chandra_output()`
+  (Chandra's native bbox-annotated-HTML into a real `ExtractedForm`).
+  Rebuilt from scratch, not from the previous session's scratch scripts
+  (never committed, and not found on disk this session either) — but
+  every parsing rule in it is grounded in Chandra's ACTUAL raw output on
+  a fresh live call against each regression form, inspected directly
+  before writing the corresponding rule, the same empirical standard the
+  previous evaluation session used.
+- **`extract_one()`** (extract_ollama_cloud.py): the main-call section is
+  now an `if "chandra" in model.lower(): ... else: <existing mistral/
+  schema-constrained loop, unchanged>` branch. The chandra branch calls
+  `call_chandra`/`parse_chandra_output` (lazily imported, mirroring
+  `hybrid_quantities_lighton`'s own lazy import) inside the same
+  `MAIN_CALL_MAX_RETRIES` retry loop the other path already has, and
+  converges on the same `extracted: ExtractedForm` before hybrid
+  quantities / recount / brandlist / debug-artifact writing / conversion
+  to `OrderForm` — none of that downstream code needed to change or even
+  know which path ran. `letter_size_hints`/`struck_out_hints` stay empty
+  for this branch (Chandra gets no schema and no mistral-only flags at
+  all), same as they already do for any non-mistral model.
+- **`get_client(model)`**: now takes the model name (previously
+  no-arg) — returns a plain unauthenticated `ollama.Client()` (local
+  service) when the model name contains "chandra", the existing
+  `OLLAMA_API_KEY`-authenticated Cloud client otherwise. `main()` and
+  `app/pipeline.py`'s `get_engine()` both updated to pass their model
+  through.
+- **CLI**: `--model chandra` is a shorthand expanded to the full
+  `hf.co/mradermacher/chandra-ocr-2-GGUF:Q5_K_M` tag right after
+  `argparse` parses it (`args.model.lower() == "chandra"`), so every
+  existing `"chandra" in model.lower()` check downstream keeps working
+  unchanged whether the user typed the shorthand or the full tag.
+- **Review app**: `POST /api/sessions` now accepts a `model` form field
+  (FastAPI `Form`), stored on the `Session` dataclass and passed to
+  `get_engine(session.model)` inside `_run_job` — resolved to
+  `DEFAULT_MODEL` when unset, same as the CLI. `get_engine`'s own
+  cache-hit check special-cases the "chandra" shorthand (compares
+  loosely against the cached engine's already-expanded model string) so
+  a session repeatedly requesting "chandra" across several page uploads
+  doesn't rebuild the client/system-prompt on every single image. The
+  upload screen (`app/static/index.html`) gained a plain `<select>`
+  ("Mistral (production default)" / "Chandra (local, free, ~2-3x
+  slower)"), read in `app.js`'s `startSession()` and appended to the
+  session-creation `FormData` only when non-default.
+
+### Two real Chandra-side quirks found while building this (not from the
+previous session's evaluation, which didn't build a real parser)
+
+Both found by actually running the parser against Chandra's real output
+on the regression forms and checking the result field-by-field, not by
+inspection of the HTML alone:
+
+1. **`sample 13-scanned.jpg`: every row's `row_total` came back empty.**
+   Root cause: Chandra's own body `<tr>` rows on this form carry ONE MORE
+   cell in the size-column region than its own `<thead>` row lists (21
+   middle cells vs. 20 headers, confirmed by direct inspection of the raw
+   HTML — a genuine inconsistency in Chandra's own table generation, not
+   a counting bug in the parser). The parser's first version sliced
+   `texts[n_leading : n_leading+n_size]` for the size cells and
+   `texts[n_leading+n_size:]` for the trailing (Total/Units) cells — a
+   fixed offset that silently shifted the trailing slice one column too
+   far left on literally every row, discarding the real Total value.
+   Fixed by reading leading cells from the START of the row and trailing
+   cells from the END (by count, `texts[-n_trailing:]`), zipping
+   whatever falls in between against `size_headers` left-aligned rather
+   than assuming an exact count match — a short zip just drops the one
+   extra (empty, on every row checked) middle cell instead of corrupting
+   every column's alignment. Confirmed fixed: row totals now read
+   37/17/20/5/51/... and match the row's own quantity sum in every case
+   spot-checked (e.g. row 0: 1+4+8+8+7+5+4=37; row 1 — this project's own
+   already-documented "B 4457 COLLAR" struck_out false-positive row from
+   the 2026-09-01 section — reads 1+2+3+3+3+3+2=17, matching a normal,
+   not-struck-out row).
+2. **`sample 13-scanned.jpg`: a spurious 21st "item"**, `item="512"
+   type="BOXES"`. Root cause: a `GRAND TOTAL` footer row on this form
+   has a DIFFERENT merged-cell shape than the already-known
+   `Old Rate Supply only` footer row on `sample 5-scanned.jpg` — that one
+   is a single `<td colspan="15">`, so the original single-cell-with-
+   colspan check caught it; this one is THREE `<td>` (`<td colspan="23">
+   GRAND TOTAL</td><td>512</td><td>BOXES</td>`), where only the FIRST
+   cell is actually merged. The single-cell check let this row through
+   as an ordinary item, and with the item-name-column heuristic pointing
+   at position 1, it read "512" as the item name. Fixed by checking the
+   MAX colspan across every cell in a row (not requiring exactly one
+   cell) against a floor scaled to the table's own width
+   (`max((n_leading+n_size)//2, 3)`) — catches both real shapes
+   confirmed on these two forms without needing to special-case either
+   one, and the merged cell's own text ("GRAND TOTAL") is kept as a page
+   note, same treatment "Old Rate Supply only" already gets.
+
+### Verification
+
+First, offline against Chandra's own real raw output: made one fresh
+live call per regression form (the previous session's own raw responses
+were never committed, and an initial filesystem search for them timed
+out without result before this parser was built -- see "Postscript"
+below for what a slower search turned up later) and fed each one
+straight through `parse_chandra_output()` with no pipeline machinery
+involved,
+so the parser's own logic could be checked in isolation before wiring
+it into anything. Every field checked by hand against this project's own
+already-documented ground truth for these forms —
+`seller_name`/`party_name`/`order_no`/`order_date` correct or, where
+wrong, wrong in the SAME already-documented way another model already
+gets it wrong (e.g. `sample 3-scanned.jpg`'s `31-03-2016` wrong-decade
+date misread, the same one `minimax-m3` independently made per this
+file's own 2026-09-07 section — a shared Chandra/model limitation, not a
+parser bug); ditto-mark expansion correct on `sample 5-scanned.jpg`'s
+"Fairleady Print" → "Fairleady Plain" and "MYNA" (bare ditto, unchanged)
+rows; the struck-out row (`sample 3-scanned.jpg`'s "Super Boy 3/4") and
+the letter-size row (`MM K4532`, still incomplete — an open, shared gap,
+not a regression) both behave exactly as the previous session's
+narrative section documented.
+
+Then real, live, end-to-end runs — the actual gap the previous session
+left ("no `extract_one()`-compatible module exists... no review-app
+wiring"), not re-confirming accuracy already established:
+
+- **CLI** (`extract_ollama_cloud.py ... --model chandra`), all 5 forms in
+  this project's regression set, real DB connection, both hybrid
+  backends: `sample 5-scanned.jpg` (`--no-lighton-hybrid`, i.e. the
+  PaddleOCR backend): 14/14 rows hybrid-corrected, including the
+  PaddleOCR pass silently fixing Chandra's own "Fairleady Print" overflow
+  anomaly (its raw reading put `105:105` under the real printed 105
+  header — Chandra transcribing the handwritten overflow value into the
+  wrong cell — hybrid corrected it to `105:10, 110:10`, matching this
+  project's own already-documented ground truth for this exact row
+  exactly). `sample 2.jpeg` (free-form, default LightOnOCR-2 backend,
+  which no-ops on a free-form page per its own size_headers check):
+  12/12 items, including the documented `110:10` no-printed-column value
+  and zero fabricated date for the "MONDAY" diary-page trap.
+  `sample 12-scanned.jpg` (non-ESSA To/From template): 10/10 rows
+  LightOnOCR-2-aligned; the party-name cross-check correctly flagged
+  BOTH `seller_name` ("G. N. Gupta & Company") and `party_name`
+  ("Rajasthan Pechinade") as not matching any registered buyer — exactly
+  the "verify against the photo" safety-net behavior CLAUDE.md documents
+  this check existing for, not a false confident match.
+  `sample 13-scanned.jpg`: 20/20 rows LightOnOCR-2-aligned (post-fix,
+  see above). `sample 4-scanned.jpg` (hardest, the near-total-OCR-
+  blindness form): 11/13 rows LightOnOCR-2-aligned. No crashes, no
+  unhandled exceptions, on any of the 5.
+- **Review app**, through its own real HTTP API (`run_ui.py` actually
+  running, not a unit test): `POST /api/sessions` with `model=chandra`
+  and a real photo (`sample 5-scanned.jpg`) → session correctly stored
+  `"model": "chandra"` → polled until `status: "ready"` → same 14
+  rows/71 filled cells as the CLI run of the same image → real DB
+  product auto-binding worked identically to a mistral session (e.g.
+  "Trend Trunk"/IE → `TREND TRUNK PKT`, bsid `20IE`, `auto_bound: true`)
+  → real buyer auto-selection worked too (`party_name` "M. K.
+  Enterprises" → buyer `M K ENTERPRISES — PUNE`, exact match after
+  punctuation normalization). Test session and its `ui_sessions/`
+  directory removed after verification.
+
+### Not done this session
+
+- Nothing wired for a per-form-template model recommendation or
+  automatic fallback (mistral fails twice → try chandra, or vice versa)
+  — the user picks the model explicitly, same one-shot-per-model design
+  every other model already has in this pipeline.
+- No further speed work — the previous session's own conclusion (no
+  lever tried closed the latency gap) stands; this session's real
+  wall-clock numbers across the 5 regression forms (see CLAUDE.md's
+  "Alternative model: Chandra" section) confirm it's still consistently
+  slower than mistral's full production pipeline on the denser forms.
+- Letter-size row resolution (`MM K4532`) is still unsolved for this
+  model, same as every other model in this project — not attempted here,
+  since the previous session's own finding (LightOnOCR-2 cannot be
+  prompted into preserving the label either) suggests this needs a
+  different mechanism entirely, not a per-model prompt tweak.
+
+### Postscript: the previous session's own scratch `chandra_parser.py` turned up after all
+
+A background filesystem search kicked off before this session's own
+parser was built (see above) had timed out with no result and was
+abandoned in favor of rebuilding from HISTORY.md's own write-up. It
+finished on its own later, after this session's parser was already
+built, tested, and wired in -- and it found the previous session's real
+scratch files after all, sitting in a DIFFERENT session's own temp
+scratchpad directory (not this one's), never committed, exactly where
+that session's own closing note said they'd be. Compared side by side
+with this session's independently-built `chandra_parser.py`, purely out
+of interest in whether anything from the original evaluation was worth
+pulling in retroactively:
+
+- **It has the same row/header cell-count misalignment bug** this
+  session found and fixed on `sample 13-scanned.jpg` (see above) --
+  fixed-offset `tds[n_leading:]` slicing, same as this session's first
+  version, never caught because that scratch session's own testing
+  never got as far as running a real parser against that specific form's
+  real output field-by-field.
+- **Its `GRAND TOTAL` footer-row check reads the wrong column entirely**
+  on `sample 13-scanned.jpg`'s exact 3-cell shape (`item_col` computed
+  from `n_leading-2` lands on the "512" cell, not the "GRAND TOTAL" cell
+  the string-match check is looking for) -- would reproduce the same
+  spurious `item="512"` row this session found and fixed.
+- **`seller_name`/`party_name`/`order_date`/`order_no` extraction is
+  hardcoded to ESSA's own phrasing** (`"essa garments"` substring match,
+  `text.startswith("party name")`, `text.startswith("date")`,
+  `text.startswith("order form no")`) -- would very likely have failed
+  outright on `sample 12-scanned.jpg`'s non-ESSA To/From template
+  (no "essa garments"/"private limited" text anywhere on that page) and
+  missed the date/order-no on `sample 13-scanned.jpg` entirely (its real
+  text is "Order Date: ..." and "Order No. ...", neither of which starts
+  with the exact prefixes those `.startswith()` checks require). Also
+  would have let a buyer's second-line city ("HYDERABAD" on
+  `sample 3-scanned.jpg`) leak into `party_name`, since it flattens
+  `<br/>` to a space BEFORE checking the "party name" prefix rather than
+  splitting on the first line first.
+
+None of this changes anything already wired in above -- this session's
+own `chandra_parser.py` was independently built against fresh live
+output and already handles every one of these cases correctly, confirmed
+by the real end-to-end runs already documented. Recorded here only
+because it's a concrete, verified answer to "would reusing the old
+scratch code have been better than rebuilding" for a future session
+tempted to grab abandoned scratch files instead of testing against real
+output: no, not in this case -- the empirical rebuild-and-verify approach
+this session used caught real bugs the original evaluation's own
+untested scratch script still had.
+
+## 2026-09-08 (later same day) — real bug: a stuck local call could hang the review app forever with no error ever shown
+
+User reported "there is still no error in ui if parsing did not
+complete" after the chandra integration above. The frontend's error
+rendering (`app/static/app.js`'s `status === 'error'` handling -- a red
+"Couldn't read this page" note plus a Retry button) was already fully
+built and already worked correctly for every failure this project's
+existing try/except blocks actually catch. The real bug was one level
+lower: a call that never raises at all.
+
+Confirmed by direct inspection: `ollama.Client()._client.timeout` is
+`Timeout(timeout=None)` -- the `ollama` package's own default client has
+NO request timeout unless one is explicitly passed at construction. Two
+real call sites in the production path used a client built this way:
+
+1. `extract_ollama_cloud.get_client()` -- both the local (chandra) and
+   Cloud (mistral) `ollama.Client()` constructions.
+2. `hybrid_quantities_lighton.py`'s `_call_lighton()` -- used a bare
+   `from ollama import chat` (a module-level convenience function bound
+   to its OWN separately-constructed default client, same `timeout=None`
+   gap) rather than a client this file controls at all. This one matters
+   more in practice than the main call: LightOnOCR-2 hybrid quantities is
+   the DEFAULT backend and runs after EVERY extraction, chandra's or
+   mistral's, so a stuck call here is the single most likely hang point
+   in the whole pipeline -- and this project's own documented,
+   never-tested concern (HISTORY.md's 2026-09-07 section: "no test of
+   concurrent usage on the shared 8GB GPU... this machine's LightOnOCR-2
+   and the local qwen2.5vl pipeline already share this same GPU") is
+   exactly the kind of real-world condition that could cause one.
+
+A stuck call under either site blocks the calling thread FOREVER: no
+exception raised, no value returned, so none of this project's existing
+try/except error handling (which already correctly sets
+`job.status = "error"` in `app/pipeline.py`'s `_run_job`, and the
+frontend already correctly renders that) ever runs -- there's nothing to
+catch. In the review app specifically, that thread is the single-worker
+`_EXECUTOR` (`ThreadPoolExecutor(max_workers=1)`), so a hang there also
+freezes every later page in that session, and every later session too,
+not just the one stuck page.
+
+**Fix**: `OLLAMA_REQUEST_TIMEOUT = 300.0` (extract_ollama_cloud.py, new
+constant with its own comment explaining why this isn't optional), passed
+to every `ollama.Client()` construction in `get_client()` (both branches)
+and to a new `hybrid_quantities_lighton._CLIENT` (replacing the bare
+`chat` import). 300s is generous headroom above every real call time
+measured on this project's forms so far (worst case ~130s: a dense
+form's chandra main call plus LightOnOCR-2 hybrid combined) -- meant to
+catch a genuine hang, not a slow-but-working call. Once a stuck call can
+actually raise (an `httpx` timeout exception), it flows through the
+EXACT SAME error handling every other failure already uses --
+`_call_schema`/`call_chandra`'s own try/except turn it into `(None,
+str(exc), usage)`, and `extract_one()`'s hybrid-quantities try/except
+catches it too -- so no error-handling or UI code needed to change at
+all, only the thing that was silently never failing.
+
+Verified: real live run (`--model chandra`, `sample 2.jpeg`, default
+LightOnOCR-2 hybrid) completed normally in 44.7s post-fix, confirming
+300s doesn't false-positive on an ordinary call.
+
+`extract_ollama.py` (the superseded original local pipeline) has the
+same bare-`chat`-import pattern in its own model-calling code -- NOT
+touched here, since it isn't reachable from `extract_one()`/the review
+app at all (only its crop-building helpers are imported into the
+production path, per this file's own "Other pipelines kept in this
+repo" section) and fixing it wouldn't affect this bug. Flagged here in
+case that file is ever run directly again.
+
+## 2026-09-09 — Per-template correction memory: `template_learning.py`, closing the loop CLAUDE.md's own "Not yet built" section had been describing since 2026-09-08
+
+New module, `template_learning.py`, plus small wiring changes in
+`extract_ollama_cloud.py` and the review app. Full current-state
+documentation lives in CLAUDE.md's "Per-template correction memory"
+section (added in the same commit) -- this entry is the narrative of how
+it got there and what it took to trust it, not a duplicate of what that
+section already says.
+
+**The idea, and the fork it turned on.** The review app already writes
+every correction to `ui_sessions/<sid>/submitted_<orderno>.json`, but
+nothing read that data back into a future extraction. Two questions had
+to be settled with the user before writing any code, because both
+genuinely change the architecture, not just the tuning:
+
+1. *When does "this looks like a template I've seen before" get decided?*
+   `seller_name`/`size_headers` -- the two fields that identify a
+   template -- don't exist until AFTER `extract_one()`'s one main call
+   returns. Two ways around that were on the table: a cheap pre-call image
+   fingerprint, or a second, cheap model call asking only for those two
+   fields before the real extraction. Both were offered; the user declined
+   both, explicitly to avoid adding either a heuristic-match failure mode
+   or a second paid call per image. That single answer forecloses feeding
+   few-shot examples into an image's OWN main call (it's already finished
+   by the time a match is known) and forecloses ever picking WHICH MODEL
+   handles the main call by template, for the identical structural reason.
+   It does NOT foreclose everything -- hybrid-quantities backend choice and
+   post-hoc corrections to the main call's own reading both happen, in
+   code, after the main call already returns, so both are still fair game
+   inside the same `extract_one()` invocation.
+2. *What does a match actually change?* The original CLAUDE.md sketch was
+   ambiguous between "surface a hint" and "just fix it." Asked to choose,
+   the user rejected the premise: **"I don't want user correcting same
+   mistakes."** That's a real product requirement, not a preference -- a
+   hints-only design would still make a reviewer retype the identical fix
+   every single time, which is exactly the friction being complained
+   about. So this had to auto-apply, with the one guardrail every other
+   auto-* mechanism in this codebase already earns its trust with: never
+   silent. A new flag status, `template_corrected`, was wired through the
+   exact same machinery `auto_corrected` already uses (`_FLAG_SEVERITY`,
+   `_merge_flag`, `_friendly_recount_summary`, `friendlyFlag`) rather than
+   inventing a parallel path.
+
+**What's actually safe to learn as a repeatable fact, once "auto-apply"
+was the answer.** The same pre-printed order form gets reused across many
+different orders from many different customers -- only the handwritten
+party name and quantities differ order to order. Item-name misreads are a
+property of the PRINTED WORD and the model's own vocabulary, so they're
+template-stable and get stored as a direct text substitution. A
+column-shift correction is template-stable only as a POSITION (a
+head-relative offset, replaying `shiftRowHorizontally()`'s own logic) --
+never as a raw quantity value, because the numbers themselves are
+handwritten and different on every single order. Getting this distinction
+wrong in either direction would have been the whole feature's failure
+mode: store raw quantities as "corrections" and it starts confidently
+overwriting a DIFFERENT order's real, different handwriting with old
+numbers.
+
+**Fuzzy at lookup, exact at storage -- added after the first draft, not
+part of the original ask.** The initial plan called for exact-string
+matching only ("the same OCR/VLM combination misreading the same printed
+word on the same form design should recur identically"), on the theory
+that a deterministic misread would reproduce byte-for-byte. On reflection
+before implementation, that assumption doesn't actually hold for a
+sampling VLM -- there's no guarantee "Fainlady Plain" comes back
+character-identical on a second call rather than, say, "Fainladi Plain".
+Exact-only matching would have silently under-fired on exactly the
+repeat-mistake case this feature exists to close. Switched to `rapidfuzz`
+at a high threshold (92, well above `brandlist_match.py`'s own 70
+suggestion floor) for LOOKUP, while keeping STORAGE keyed on the literal
+raw text seen (no fuzzy merging when writing, so two genuinely different
+misreads don't collapse into one rule). Confirmed by a real self-test:
+a rule stored under trigger "Fainlady Plain" correctly fired against a
+freshly-extracted "Fainladi Plain" on a different simulated call.
+
+**Confidence gating: active on the first correction, not the second.**
+Rather than requiring a rule to be confirmed twice before it auto-applies
+(this codebase's usual pattern -- `MIN_OCR_COVERAGE`, the `AUTO_APPLY_*`
+score bands), a rule here goes active the moment it's first recorded. This
+was a deliberate departure, argued directly from the user's own words:
+gating on a second confirmation would mean the reviewer fixes the same
+mistake twice before the system ever helps, which is precisely the thing
+they said they didn't want. The asymmetry is made safe on the other side
+instead -- a single CONTRADICTING correction replaces a stored rule
+immediately (no streak required to unlearn it either), because a retired
+rule can only ever fall back to today's fully-manual baseline, never to
+something worse than not having the feature at all.
+
+**Verification -- real calls, not mocks, end to end.** Isolated
+self-tests first (write path, read path, confirm/contradict
+reconciliation, fuzzy-trigger firing, free-form-page no-op all directly
+exercised against `template_learning.py`'s real functions). Then two real
+Ollama Cloud calls against `sample 5-scanned.jpg` through the actual
+`extract_ollama_cloud.py` CLI: first call, `matched: false` as expected;
+a simulated reviewer correction (item-name fix on "Trend Trunk", +1
+column shift on "Exoda Trunk") recorded via `record_corrections()`
+against the REAL artifacts that first call produced; second call on the
+identical image auto-applied both corrections and flagged both rows
+`template_corrected` with a specific note. `app/pipeline.py`'s actual
+`_rebuild_payload()` (not a reimplementation) was exercised directly
+against those same real artifacts and produced the correct
+`page.template_learning` summary. Finally, a real headless-Chromium
+session (Playwright, driven since this environment has no `chromium-cli`)
+uploaded the same image through the real review app end to end and
+confirmed, in the rendered DOM: the page-level "📋 Seen before: this
+template has been reviewed once before, 2 corrections applied
+automatically from past orders" note, the corrected item name
+("Trend Trunk V2") present as an actual input value, and both rows'
+tooltip text starting with "Template memory:". One of those two rows
+also carried an unrelated, genuine hybrid-OCR disagreement flag from
+that same real run -- its tooltip correctly showed BOTH reasons joined
+by " | ", which is what caught a real latent bug while building this:
+`_friendly_recount_summary()`/`friendlyFlag()` special-cased a note
+prefix with `.startswith()`, which only matches when that prefix is the
+FIRST segment `_merge_flag()` assembled. A template correction is always
+merged in LAST (it runs after every other flag-producing stage in
+`extract_one()`), so on a row already flagged by something else,
+`.startswith()` would have silently dropped the template-memory reason
+from the tooltip entirely. Fixed to a substring check for all three
+prefixes (the two pre-existing ones had the identical latent gap, not
+just the new one) while this was being verified, not left for later.
+
+Every file touched, and the synthetic "Trend Trunk V2"/`+1` test rule
+itself, were cleaned up after verification -- `template_memory/` ships
+empty; nothing synthetic was left in a store that a real future upload of
+this exact form would otherwise have been auto-corrected against.

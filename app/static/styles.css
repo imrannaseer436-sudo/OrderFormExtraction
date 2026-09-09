@@ -1,0 +1,770 @@
+/* Order Form Review — visual system.
+
+   Two constraints drove everything here:
+   1. The reviewer's eyes move between a photograph and a grid, dozens of
+      times per order. So the grid is quiet (thin rules, low-chroma ground)
+      and only *doubt* is loud — flagged cells, unbound rows, blocking
+      problems. Nothing else competes with the photo.
+   2. The size-header row and the item-name column must never leave the
+      screen while scrolling a 20-row × 14-size table, or the reviewer has
+      to scroll back up to find out which column they're looking at.
+      Both are sticky. */
+
+:root {
+  color-scheme: light;
+  --bg:            #f6f7f9;
+  --surface:       #ffffff;
+  --surface-2:     #fbfcfd;
+  --surface-sunk:  #f1f3f6;
+  --border:        #e3e6ec;
+  --border-strong: #cfd4de;
+  --text:          #1b1f27;
+  --text-dim:      #626b7b;
+  --text-faint:    #8b94a3;
+  --accent:        #3d5afe;
+  --accent-soft:   #eef1ff;
+  --accent-text:   #2c3fc4;
+  --warn:          #b45309;
+  --warn-soft:     #fff5e6;
+  --warn-border:   #f3d5a4;
+  --danger:        #c62828;
+  --danger-soft:   #fdeeee;
+  --danger-border: #f2c4c4;
+  --ok:            #17803d;
+  --ok-soft:       #e9f7ee;
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, .06);
+  --shadow-md: 0 4px 16px rgba(16, 24, 40, .08);
+  --shadow-lg: 0 18px 48px rgba(16, 24, 40, .18);
+  --radius: 10px;
+  --topbar-h: 56px;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+    --bg:            #14161a;
+    --surface:       #1b1e24;
+    --surface-2:     #20242b;
+    --surface-sunk:  #16181d;
+    --border:        #2b3038;
+    --border-strong: #3a414c;
+    --text:          #e8eaee;
+    --text-dim:      #a2abba;
+    --text-faint:    #78818f;
+    --accent:        #7c8dff;
+    --accent-soft:   #232a45;
+    --accent-text:   #aab6ff;
+    --warn:          #e3a044;
+    --warn-soft:     #33291a;
+    --warn-border:   #55411f;
+    --danger:        #ef6b6b;
+    --danger-soft:   #35211f;
+    --danger-border: #5a2f2c;
+    --ok:            #56c37f;
+    --ok-soft:       #17301f;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
+    --shadow-md: 0 4px 16px rgba(0, 0, 0, .45);
+    --shadow-lg: 0 18px 48px rgba(0, 0, 0, .6);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--font);
+  -webkit-font-smoothing: antialiased;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+h1, h2, h3 { margin: 0; font-weight: 620; letter-spacing: -.01em; }
+h1 { font-size: 21px; }
+h2 { font-size: 14px; }
+.muted { color: var(--text-dim); }
+.small { font-size: 12px; }
+em { font-style: normal; color: var(--text-faint); font-weight: 400; }
+
+/* ───────────────────────────────── topbar ───────────────────────────────── */
+.topbar {
+  height: var(--topbar-h);
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  z-index: 40;
+}
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 640; letter-spacing: -.01em; }
+.brand-mark {
+  width: 20px; height: 20px; border-radius: 6px;
+  background: linear-gradient(135deg, var(--accent), #9b6bff);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.25);
+}
+.topbar-spacer { flex: 1; }
+.topbar-fields { display: flex; gap: 10px; }
+.topbar-actions { display: flex; align-items: center; gap: 10px; }
+
+/* ───────────────────────────────── controls ─────────────────────────────── */
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field-inline { flex-direction: row; align-items: center; gap: 7px; }
+.field-grow { grid-column: span 2; }
+.field-label { font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .045em; white-space: nowrap; }
+.field-label.req::after { content: " *"; color: var(--danger); }
+.field-help { font-size: 11.5px; color: var(--text-faint); min-height: 14px; }
+
+.control {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 7px 9px;
+  min-width: 0;
+  transition: border-color .12s, box-shadow .12s;
+}
+.control:hover { border-color: var(--text-faint); }
+.control:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.control[readonly] { background: var(--surface-sunk); color: var(--text-dim); }
+select.control { cursor: pointer; }
+
+.btn {
+  font: inherit; font-weight: 550;
+  border-radius: 8px;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, transform .06s;
+  white-space: nowrap;
+}
+.btn:active { transform: translateY(1px); }
+.btn-primary { background: var(--accent); color: #fff; box-shadow: var(--shadow-sm); }
+.btn-primary:hover { filter: brightness(1.07); }
+.btn-primary:disabled { opacity: .5; cursor: not-allowed; filter: none; }
+.btn-ghost { background: var(--surface); color: var(--text); border-color: var(--border-strong); }
+.btn-ghost:hover { background: var(--surface-2); border-color: var(--text-faint); }
+
+.icon-btn {
+  display: inline-grid; place-items: center;
+  width: 28px; height: 28px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit; font-size: 15px; line-height: 1;
+  transition: background .12s, color .12s;
+}
+.icon-btn:hover { background: var(--surface-sunk); color: var(--text); }
+.icon-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.pill {
+  font-size: 11.5px; font-weight: 600;
+  padding: 3px 9px; border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+.pill-ok { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.pill-bad { color: var(--danger); background: var(--danger-soft); border-color: transparent; }
+.pill-muted { color: var(--text-faint); }
+
+.chip {
+  font-size: 11.5px; color: var(--text-dim);
+  background: var(--surface-sunk); border-radius: 999px;
+  padding: 2px 9px; white-space: nowrap;
+}
+
+/* ──────────────────────────── progress / banners ────────────────────────── */
+
+/* Indeterminate bar under the topbar — shown whenever an upload is in
+   flight or any page is still being read, so "something is happening" is
+   visible from anywhere in the app, not only next to the page being read. */
+.progress-bar {
+  flex: 0 0 auto;
+  height: 3px;
+  background: var(--surface-sunk);
+  overflow: hidden;
+  position: relative;
+  z-index: 39;
+}
+.progress-bar[hidden] { display: none; }
+.progress-bar span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 34%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: sweep 1.15s ease-in-out infinite;
+}
+@keyframes sweep {
+  0%   { transform: translateX(-100%) }
+  100% { transform: translateX(390%) }
+}
+
+.banner-area { flex: 0 0 auto; }
+.banner {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 16px;
+  font-size: 13px;
+  border-bottom: 1px solid var(--border);
+}
+.banner-warn { background: var(--warn-soft); color: var(--warn); border-bottom-color: var(--warn-border); }
+.banner-error { background: var(--danger-soft); color: var(--danger); border-bottom-color: var(--danger-border); }
+.banner button { margin-left: auto; }
+
+/* ───────────────────────────────── views ────────────────────────────────── */
+.view { flex: 1 1 auto; min-height: 0; }
+.view[hidden] { display: none; }
+
+.view-upload, .view-done { display: grid; place-items: center; padding: 24px; overflow: auto; }
+
+.upload-card, .done-card {
+  width: min(620px, 100%);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 32px;
+  box-shadow: var(--shadow-md);
+  text-align: center;
+}
+.upload-card h1 { margin-bottom: 6px; }
+.upload-card > p { margin: 0 0 20px; }
+
+.dropzone {
+  display: grid; place-items: center; gap: 6px;
+  padding: 40px 20px;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+.dropzone:hover, .dropzone.dragover { border-color: var(--accent); background: var(--accent-soft); }
+.dropzone-icon { width: 30px; height: 30px; fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.dropzone-title { font-weight: 600; }
+.dropzone-sub { font-size: 12px; color: var(--text-dim); }
+.upload-card .small { margin: 16px 0 0; }
+.upload-card > .field { width: min(340px, 100%); margin: 0 auto 16px; text-align: left; }
+
+/* ───────────────────────────── review split ─────────────────────────────── */
+.view-review { display: flex; align-items: stretch; min-height: 0; }
+
+.image-pane {
+  flex: 0 0 var(--image-pane-w, 46%);
+  min-width: 260px;
+  display: flex; flex-direction: column;
+  background: var(--surface-sunk);
+  border-right: 1px solid var(--border);
+  min-height: 0;
+}
+.pane-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.page-tabs { display: flex; gap: 4px; overflow-x: auto; flex: 1; scrollbar-width: thin; }
+.page-tab {
+  font: inherit; font-size: 12.5px; font-weight: 550;
+  padding: 5px 11px; border-radius: 7px;
+  border: 1px solid transparent; background: transparent;
+  color: var(--text-dim); cursor: pointer; white-space: nowrap;
+  display: flex; align-items: center; gap: 6px;
+}
+.page-tab:hover { background: var(--surface-sunk); }
+.page-tab.active { background: var(--accent-soft); color: var(--accent-text); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+.page-tab .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-faint); flex: 0 0 auto; }
+.page-tab .dot.running { background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+.page-tab .dot.done { background: var(--ok); }
+.page-tab .dot.error { background: var(--danger); }
+@keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .25 } }
+
+.viewer-tools { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.zoom-label { font-size: 11.5px; color: var(--text-dim); min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
+
+.viewer {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+  background:
+    repeating-conic-gradient(var(--surface-sunk) 0 25%, transparent 0 50%) 50% / 22px 22px;
+}
+.viewer.grabbing { cursor: grabbing; }
+.viewer img {
+  position: absolute; top: 0; left: 0;
+  transform-origin: 0 0;
+  user-select: none; -webkit-user-drag: none;
+  box-shadow: var(--shadow-md);
+  background: #fff;
+}
+.viewer-empty {
+  position: absolute; inset: 0;
+  display: grid; place-items: center;
+  color: var(--text-faint); font-size: 13px;
+  pointer-events: none;
+}
+.viewer-empty[hidden] { display: none; }
+.pane-foot { padding: 6px 10px; border-top: 1px solid var(--border); background: var(--surface); flex: 0 0 auto; }
+
+/* Collapsed photo pane: the grid gets the whole window, and a narrow rail
+   stays behind so getting the photo back is one click from where it went. */
+.view-review.image-hidden .image-pane,
+.view-review.image-hidden .splitter { display: none; }
+.image-rail {
+  flex: 0 0 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 0;
+  border: none;
+  border-right: 1px solid var(--border);
+  background: var(--surface-sunk);
+  color: var(--text-dim);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.image-rail[hidden] { display: none; }
+.image-rail:hover { background: var(--accent-soft); color: var(--accent-text); }
+.image-rail svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.image-rail span { writing-mode: vertical-rl; }
+
+.splitter {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: transparent;
+  position: relative;
+  z-index: 20;
+}
+.splitter::after {
+  content: ""; position: absolute; inset: 0 2px;
+  background: transparent; transition: background .15s;
+}
+.splitter:hover::after, .splitter.dragging::after { background: var(--accent); }
+
+/* ───────────────────────────────── form pane ────────────────────────────── */
+.form-pane { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.form-scroll { flex: 1 1 auto; overflow: auto; padding: 14px 14px 0; scroll-behavior: smooth; }
+.scroll-tail { height: 40px; }
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+  box-shadow: var(--shadow-sm);
+  /* deliberately NOT overflow:hidden -- that would make this element the
+     nearest scroll container and silently kill the sticky card header */
+}
+.card-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
+  cursor: pointer;
+  user-select: none;
+  position: sticky;
+  top: 0;
+  z-index: 12;
+}
+.card.collapsed .card-head { border-radius: calc(var(--radius) - 1px); }
+.card-head h2 { flex: 0 0 auto; }
+.card-head .head-spacer { flex: 1; }
+.card.collapsed .card-head { border-bottom-color: transparent; }
+.card.collapsed .card-body { display: none; }
+.collapse-btn { background: none; border: none; padding: 0; width: 20px; height: 20px; display: grid; place-items: center; cursor: pointer; color: var(--text-dim); }
+.collapse-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; transition: transform .16s; }
+.card.collapsed .collapse-btn svg { transform: rotate(-90deg); }
+.card-body { padding: 12px; }
+
+.grid-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 12px 14px;
+}
+
+/* ─────────────────────────────── page card ──────────────────────────────── */
+.page-card .card-body { padding: 0; }
+.page-toolbar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12.5px;
+}
+.page-toolbar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+.tool-btn {
+  font: inherit; font-size: 12px; font-weight: 550;
+  padding: 4px 9px; border-radius: 6px;
+  border: 1px solid var(--border-strong); background: var(--surface);
+  color: var(--text-dim); cursor: pointer;
+}
+.tool-btn:hover { background: var(--surface-sunk); color: var(--text); border-color: var(--text-faint); }
+.tool-btn-on { background: var(--accent-soft); color: var(--accent-text); border-color: transparent; }
+
+.page-status {
+  padding: 22px 14px; text-align: center; color: var(--text-dim); font-size: 13px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.spinner {
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 2.5px solid var(--border-strong); border-top-color: var(--accent);
+  animation: spin .8s linear infinite;
+}
+.elapsed { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+@keyframes spin { to { transform: rotate(360deg) } }
+
+/* ─────────────────────────────── the grid ───────────────────────────────── */
+
+/* The table is its own scroll region in BOTH axes, capped near the viewport
+   height. That is what makes the frozen size-header row and the frozen
+   item-name column actually work: a sticky element sticks to its nearest
+   scrolling ancestor, so the header row can only stay put while the rows
+   move if the rows are scrolling inside this element. Scroll chaining still
+   carries the wheel on to the page once a table reaches its end. */
+.table-wrap {
+  overflow: auto;
+  max-height: calc(100vh - 232px);
+}
+
+/* Mirrored horizontal scrollbar, pinned above the grid. The grid's own
+   scrollbar is at the bottom of a viewport-tall scroll region, which means
+   reaching the far-right size columns would otherwise require scrolling to
+   the last row first. This one stays under the card header, wherever you
+   are in the rows. Hidden entirely when the table already fits. */
+.hscroll-mirror {
+  overflow-x: auto;
+  overflow-y: hidden;
+  height: 0;
+  position: sticky;
+  top: 41px;
+  z-index: 13;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+}
+.hscroll-mirror.needed { height: 14px; }
+.hscroll-spacer { height: 1px; }
+.hscroll-mirror::-webkit-scrollbar { height: 11px; }
+.hscroll-mirror::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 6px;
+}
+.hscroll-mirror::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+
+table.grid {
+  border-collapse: separate;
+  border-spacing: 0;
+  /* table-layout: fixed, with the widths declared once in the <colgroup>
+     below. Under the default auto layout every cell's max-content sets its
+     column, and a `width: 100%` on an <input> counts as `auto` for that
+     calculation -- so each quantity cell was contributing the browser's
+     default input width (~170px) and the min-widths here were never the
+     binding constraint. Fixed layout makes the declared width the actual
+     width, percentages inside resolve against it, and over-long content
+     ellipsizes or wraps instead of stretching the grid. */
+  table-layout: fixed;
+  width: max-content;
+  min-width: 100%;
+  font-size: 13px;
+}
+
+/* The single source of truth for column widths. A 20-size form comes to
+   24 + 200 + 20x34 + 42 + 42 + 74 = 1062px, which fits without horizontal
+   scrolling on a normal screen. */
+table.grid col.c-idx     { width: 24px; }
+table.grid col.c-item    { width: 200px; }
+table.grid col.c-size    { width: 34px; }
+table.grid col.c-total   { width: 42px; }
+table.grid col.c-printed { width: 42px; }
+table.grid col.c-actions { width: 74px; }
+table.grid th, table.grid td {
+  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  padding: 0;
+  background: var(--surface);
+}
+table.grid thead th {
+  /* Frozen size-header row: the fix for scrolling a 20-row table and losing
+     track of which size each column is. Sticks to the top of .table-wrap. */
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--surface-2);
+  font-size: 11.5px; font-weight: 640;
+  color: var(--text-dim);
+  padding: 7px 3px;
+  text-align: center;
+  white-space: nowrap;
+  border-bottom: 1.5px solid var(--border-strong);
+}
+
+/* Size columns are sized to hold a 3-digit size and a 3-digit quantity and
+   nothing more — on a 20-size form every extra pixel here costs 20 pixels
+   of horizontal scrolling. A longer value still widens its own column
+   (the table is width:max-content), so nothing is ever truncated. */
+table.grid thead th.col-size { position: relative; }
+table.grid thead th.col-size .hdr {
+  display: flex; align-items: center; justify-content: center;
+}
+table.grid thead th.col-size .size-text { font-size: 13px; color: var(--text); font-variant-numeric: tabular-nums; }
+table.grid thead th.col-size .size-extra { color: var(--accent-text); }
+
+/* Absolutely positioned, so the remove-column button costs no layout width
+   while hidden — as an inline `visibility: hidden` element it was reserving
+   ~14px in every single size column. */
+table.grid thead th.col-size .kill {
+  position: absolute; top: 0; right: 0;
+  opacity: 0; transition: opacity .12s;
+  border: none; background: none; cursor: pointer;
+  color: var(--text-faint); font-size: 11px; line-height: 1; padding: 1px 2px;
+}
+table.grid thead th.col-size:hover .kill { opacity: 1; }
+table.grid thead th.col-size .kill:hover { color: var(--danger); }
+
+/* First two columns pinned so the item name never scrolls out of view
+   horizontally on a 14-size table. The left offset must equal col.c-idx's
+   width. */
+table.grid th.col-idx, table.grid td.cell-idx { position: sticky; left: 0; z-index: 9; }
+table.grid th.col-item, table.grid td.cell-item { position: sticky; left: 24px; z-index: 9; box-shadow: 1px 0 0 var(--border); }
+table.grid thead th.col-idx, table.grid thead th.col-item { z-index: 11; }
+
+tbody tr.row:hover td { background: var(--surface-2); }
+tbody tr.row.flagged td.cell-item { box-shadow: inset 3px 0 0 var(--warn), 1px 0 0 var(--border); }
+tbody tr.row.unbound td.cell-item { box-shadow: inset 3px 0 0 var(--danger), 1px 0 0 var(--border); }
+
+td.cell-idx { text-align: center; color: var(--text-faint); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+td.cell-item { padding: 2px 5px; vertical-align: middle; overflow: hidden; }
+
+/* The row's one line: name fills it, anything demanding action sits at the
+   end. Keeping this to a single line is what lets a row be ~32px instead of
+   ~58px — with 20 rows that is more than a screenful of scrolling. */
+.item-top { display: flex; align-items: center; gap: 3px; }
+.item-flags { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; }
+.item-name-input {
+  flex: 1 1 auto; min-width: 0;
+  font: inherit; font-weight: 550;
+  border: 1px solid transparent; background: transparent; color: var(--text);
+  border-radius: 5px; padding: 2px 4px;
+}
+
+/* Small actionable chips — clicking either opens the product picker. */
+.chip-action {
+  flex: 0 0 auto; cursor: pointer;
+  font: inherit; font-size: 10px; font-weight: 700;
+  letter-spacing: .03em; text-transform: uppercase;
+  padding: 1px 4px; border-radius: 4px; border: 1px solid transparent;
+}
+.chip-bad  { background: var(--danger-soft); color: var(--danger); border-color: var(--danger-border); }
+.chip-warn { background: var(--warn-soft); color: var(--warn); border-color: var(--warn-border); }
+.chip-action:hover { filter: brightness(.95); }
+
+.bound-line {
+  display: flex; align-items: center; gap: 5px; margin-top: 3px; font-size: 11px;
+}
+.item-name-input:hover { border-color: var(--border); }
+.item-name-input:focus { outline: none; border-color: var(--accent); background: var(--surface); box-shadow: 0 0 0 3px var(--accent-soft); }
+
+/* min-width: 0 is what actually makes the ellipsis work. A flex item
+   defaults to min-width: auto, i.e. it refuses to shrink below its
+   min-content size -- and for nowrap text that's the whole string, so the
+   product label was forcing the item column as wide as the longest catalog
+   name instead of truncating. */
+.bound-name {
+  color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0; flex: 1 1 auto;
+}
+.bound-name.none { color: var(--danger); font-weight: 550; }
+.tag {
+  font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 4px; flex: 0 0 auto;
+}
+.tag-auto  { background: var(--accent-soft); color: var(--accent-text); }
+.tag-check { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn-border); }
+.tag-style { background: var(--surface-sunk); color: var(--text-dim); }
+.link-btn {
+  background: none; border: none; padding: 0; cursor: pointer;
+  color: var(--accent-text); font: inherit; font-size: 11.5px; text-decoration: underline;
+  text-underline-offset: 2px; flex: 0 0 auto;
+}
+
+/* Flags and catalog notes as single glyphs rather than paragraphs — they
+   used to add three or four lines to every flagged row, which on a 20-row
+   form is most of the scrolling. The row's coloured left edge and its
+   highlighted cells still carry the signal; the text is in the tooltip. */
+.marker {
+  flex: 0 0 auto;
+  font-size: 12px; line-height: 1;
+  cursor: help;
+}
+.marker-warn   { color: var(--warn); }
+.marker-info   { color: var(--accent-text); }
+.marker-struck { color: var(--text-faint); }
+
+/* quantity cells */
+td.cell-qty { padding: 0; }
+td.cell-qty input {
+  width: 100%; height: 100%;
+  min-height: 28px;
+  font: inherit; font-variant-numeric: tabular-nums;
+  text-align: center;
+  border: none; background: transparent; color: var(--text);
+  padding: 5px 1px;
+  -moz-appearance: textfield;
+}
+td.cell-qty input::-webkit-outer-spin-button,
+td.cell-qty input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+td.cell-qty input:focus { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--surface); }
+td.cell-qty.filled { background: var(--surface); }
+td.cell-qty.filled input { font-weight: 600; }
+td.cell-qty.flagged { background: var(--warn-soft); }
+td.cell-qty.flagged input { color: var(--warn); }
+td.cell-qty.invalid { background: var(--danger-soft); }
+td.cell-qty.invalid input { color: var(--danger); font-weight: 650; }
+
+td.cell-total, td.cell-printed { text-align: center; font-variant-numeric: tabular-nums; color: var(--text-dim); font-size: 12.5px; }
+td.cell-total strong { color: var(--text); }
+td.cell-total.mismatch { background: var(--warn-soft); color: var(--warn); }
+
+td.cell-actions { padding: 1px 3px; }
+.row-tools { display: flex; gap: 1px; justify-content: center; }
+.row-tools .icon-btn { width: 21px; height: 21px; font-size: 12px; }
+.row-tools .icon-btn.danger:hover { background: var(--danger-soft); color: var(--danger); }
+
+tfoot td {
+  background: var(--surface-2);
+  font-size: 12px; font-weight: 600; color: var(--text-dim);
+  padding: 6px; text-align: center; font-variant-numeric: tabular-nums;
+  border-top: 1.5px solid var(--border-strong);
+}
+tfoot td.label { text-align: right; padding-right: 10px; }
+
+.page-foot {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px; border-top: 1px solid var(--border); background: var(--surface-2);
+}
+
+.page-notes { padding: 8px 12px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-dim); }
+.page-notes ul { margin: 4px 0 0; padding-left: 18px; }
+
+/* ───────────────────────────── combobox picker ──────────────────────────── */
+.picker { position: relative; }
+.picker-input { width: 100%; }
+.picker-menu {
+  position: fixed;
+  z-index: 60;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  box-shadow: var(--shadow-lg);
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px;
+}
+.picker-menu[hidden] { display: none; }
+.picker-option {
+  padding: 7px 9px; border-radius: 6px; cursor: pointer;
+  display: flex; flex-direction: column; gap: 2px;
+}
+.picker-option:hover, .picker-option.active { background: var(--accent-soft); }
+.picker-option .opt-main { font-weight: 550; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+.picker-option .opt-sub { font-size: 11.5px; color: var(--text-dim); }
+.picker-empty { padding: 12px; text-align: center; color: var(--text-faint); font-size: 12.5px; }
+
+/* ─────────────────────────────── action bar ─────────────────────────────── */
+.actionbar {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -2px 12px rgba(16,24,40,.05);
+}
+.totals { display: flex; gap: 16px; flex: 0 0 auto; }
+.total-block { display: flex; flex-direction: column; line-height: 1.15; }
+.total-block strong { font-size: 16px; font-variant-numeric: tabular-nums; }
+.total-block span { font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .05em; }
+.validation-summary { flex: 1; min-width: 0; font-size: 12.5px; }
+.validation-summary .problem { color: var(--danger); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.validation-summary .clean { color: var(--ok); font-weight: 550; }
+.actionbar-buttons { display: flex; gap: 8px; flex: 0 0 auto; }
+
+/* ────────────────────────────── notes / done ────────────────────────────── */
+.note { padding: 9px 11px; border-radius: 8px; font-size: 12.5px; line-height: 1.5; margin-bottom: 12px; }
+.note-warn { background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn-border); }
+.note-info { background: var(--accent-soft); color: var(--accent-text); }
+
+.done-mark {
+  width: 56px; height: 56px; margin: 0 auto 16px;
+  border-radius: 50%; background: var(--ok-soft);
+  display: grid; place-items: center;
+}
+.done-mark svg { width: 26px; height: 26px; fill: none; stroke: var(--ok); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.done-order { font-size: 17px; margin: 4px 0 18px; }
+.done-order strong { font-variant-numeric: tabular-nums; font-size: 22px; }
+.done-details { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; text-align: left; margin: 0 auto 22px; width: fit-content; font-size: 13px; }
+.done-details dt { color: var(--text-dim); }
+.done-details dd { margin: 0; font-weight: 550; }
+
+/* ────────────────────────────── lightbox ────────────────────────────────── */
+.lightbox {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(10, 12, 16, .93);
+  display: grid; place-items: center;
+  overflow: auto;
+}
+.lightbox[hidden] { display: none; }
+.lightbox img { max-width: none; box-shadow: var(--shadow-lg); background: #fff; }
+.lightbox-close {
+  position: fixed; top: 14px; right: 18px;
+  width: 36px; height: 36px; font-size: 18px;
+  background: rgba(255,255,255,.12); color: #fff; border-radius: 50%;
+}
+.lightbox-close:hover { background: rgba(255,255,255,.25); color: #fff; }
+
+/* ─────────────────────────────── toasts ─────────────────────────────────── */
+.toast-area {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+  z-index: 120; display: flex; flex-direction: column; gap: 8px; align-items: center;
+  pointer-events: none;
+}
+.toast {
+  background: var(--text); color: var(--bg);
+  padding: 9px 16px; border-radius: 999px;
+  font-size: 13px; font-weight: 550;
+  box-shadow: var(--shadow-lg);
+  animation: toast-in .18s ease-out;
+  max-width: 70vw;
+}
+.toast.bad { background: var(--danger); color: #fff; }
+.toast.good { background: var(--ok); color: #fff; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px) } }
+
+/* ───────────────────────────── narrow screens ───────────────────────────── */
+@media (max-width: 900px) {
+  .view-review { flex-direction: column; }
+  .image-pane { flex: 0 0 42vh; border-right: none; border-bottom: 1px solid var(--border); }
+  .splitter { display: none; }
+  .topbar-fields { display: none; }
+  table.grid col.c-item { width: 160px; }
+}

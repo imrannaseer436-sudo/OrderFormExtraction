@@ -2,8 +2,8 @@
 
 Turns a photo of a handwritten/printed garment order form into
 structured JSON (party name, order no./date, and a size→quantity table
-per item), ready for a quick human review before it goes into the order
-database.
+per item), reviews it against the photo in a browser, and writes the
+finished order straight into the order database.
 
 ```json
 {
@@ -19,17 +19,45 @@ database.
 ## How it works
 
 One photo goes to `mistral-large-3:675b` on [Ollama Cloud](https://ollama.com)
-for a single structured extraction call. A local OCR pass then re-checks
-the quantity table against the image's own measured pixel positions
-(catches the column-drift errors a vision model makes on dense tables),
-and a local product-catalog lookup cross-checks item names, style codes,
-and sizes against the real database. Nothing about this needs a GPU or a
-local model — the only local computation is OCR and a SQL lookup.
+for a single structured extraction call. A second, local re-read of the
+quantity table (a small vision model, or OCR) then cross-checks it
+against what the cloud call reported (catches the column-drift errors a
+vision model makes on dense tables), and a local product-catalog lookup
+cross-checks item names, style codes, and sizes against the real
+database. A fully local alternative also exists (`--model chandra`, or
+the "Chandra" option in the review app) for when the cloud call isn't
+wanted at all — slower, but needs no API key and nothing leaves the
+machine; see CLAUDE.md's "Alternative model: Chandra" section.
 
 See [CLAUDE.md](CLAUDE.md) for the full pipeline architecture, CLI
 defaults, and known limitations, and [HISTORY.md](HISTORY.md) for the
 complete development history (every model and approach that was tried
 along the way).
+
+## The review app
+
+`run_ui.py` is how orders actually get entered. It serves a browser app
+that takes the photos, runs them through the pipeline, and shows the
+extracted grid beside the photo for a human to correct — product and
+buyer pickers with search, one-click repairs for the pipeline's known
+failure modes (a row read one column off, a block of rows attributed one
+row off, a product whose real sizes aren't on the printed grid), and a
+frozen size-header row and item column so nothing scrolls out of view.
+When it's right, one button writes the `OrderMaster` / `OrderDetails`
+rows. Nothing reaches the database before that click.
+
+```powershell
+.venv\Scripts\python.exe run_ui.py
+```
+
+It binds `0.0.0.0`, and prints both a `localhost` URL and a LAN URL — open
+the LAN one on a phone to photograph a form and upload it directly, then
+review it on a desktop. Several photos can belong to one order; they're
+reviewed together and uploaded as a single order.
+
+The CLI below is still the way to run the pipeline on its own — for
+batch extraction, for debugging a form, or when there's no database to
+upload to.
 
 ## Setup
 
@@ -45,9 +73,9 @@ Create a `.env` file in the project root:
 
 ```
 OLLAMA_API_KEY=...      # required -- ollama.com/settings/keys
-SERVER=...               # optional -- enables the product-catalog cross-check
-DB=...                    # (all four required together, or all omitted)
-USER=...
+SERVER=...               # required for the review app; optional for the CLI,
+DB=...                    # where it only enables the catalog cross-check.
+USER=...                   # (all four required together, or all omitted)
 PASSWORD=...
 ```
 
@@ -65,7 +93,7 @@ PASSWORD=...
 ```
 
 Each run writes `<name>.json` (the final structured output) plus several
-debugging artifacts and a flattened `review.csv` into `--outdir`. Open
-the generated `<name>.review.html` in a browser to check the extracted
-grid against the source photo side by side, edit any wrong cell, and
-export corrected JSON before it goes to the database.
+debugging artifacts and a flattened `review.csv` into `--outdir`.
+`generate_review.py` turns one of those into a standalone HTML page that
+exports corrected JSON — useful for checking a single form offline, but
+the review app above is what feeds the database.

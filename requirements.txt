@@ -23,3 +23,10 @@ pyodbc>=5.0.0                        # brandlist_match.py -- SQL Server catalog 
                                        # needs "ODBC Driver 17 for SQL Server" installed separately
 rapidfuzz>=3.0.0                        # fuzzy item-name/buyer-name matching in brandlist_match.py
 httpx>=0.28.0                             # raw HTTP bypass for think="max" (see extract_ollama_cloud.py)
+
+# Review-and-upload web app (app/, launched by run_ui.py). Separate from the
+# CLI pipeline above -- extract_ollama_cloud.py runs fine without these, but
+# `python run_ui.py` needs all three.
+fastapi>=0.115.0        # app/server.py -- the JSON API the browser talks to
+uvicorn[standard]>=0.30.0  # ASGI server run_ui.py starts
+python-multipart>=0.0.9      # multipart/form-data parsing for the image uploads

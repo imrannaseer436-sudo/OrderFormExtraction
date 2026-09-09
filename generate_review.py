@@ -129,7 +129,13 @@ def _friendly_recount_summary(flag: dict) -> str:
     # accurate than the recount-pass phrasing below, which describes a
     # DIFFERENT mechanism (two independent VLM reads disagreeing) these
     # flags never go through.
-    if note.startswith("Hybrid OCR+VLM:") or note.startswith("Catalog check:"):
+    # Substring, not startswith: a template-memory correction is always
+    # merged in LAST (extract_ollama_cloud.py applies it after every other
+    # flag-producing stage), so its note is never the first segment
+    # _merge_flag() assembled once another mechanism already flagged the
+    # same row -- startswith would silently miss it in that case. Applies
+    # to the two pre-existing prefixes too, which had the identical latent gap.
+    if "Hybrid OCR+VLM:" in note or "Catalog check:" in note or "Template memory:" in note:
         return f"⚠️ {html.escape(note)}"
     if status == "unresolved":
         return f"⚠️ Please check sizes {sizes} against the photo — two automatic checks disagreed and we couldn't tell which is right."
@@ -137,6 +143,8 @@ def _friendly_recount_summary(flag: dict) -> str:
         return f"⚠️ Worth a quick check on sizes {sizes} — two automatic checks disagreed, so we picked the one that matched the order total or product catalog."
     if status == "auto_corrected":
         return f"⚠️ Please verify sizes {sizes} — both checks agreed, but the sizes looked shifted, so we corrected them to match the product catalog."
+    if status == "template_corrected":
+        return f"✓ Sizes {sizes} auto-corrected from a previously confirmed reading of this exact form template — quick check recommended."
     if status == "unverified":
         return "This row's quantities were not double-checked — please verify against the photo."
     return html.escape(flag.get("note", ""))
@@ -286,6 +294,8 @@ def render_html(order_form: dict, stage_a: dict | None, headers: list[str], imag
     --flag-resolved-soft: #fbeedd;
     --flag-corrected: #6a4c93;
     --flag-corrected-soft: #efe7f5;
+    --flag-template: #1a7a5e;
+    --flag-template-soft: #e2f3ec;
     --flag-unverified: #5b6470;
     --flag-unverified-soft: #e7e9eb;
   }}
@@ -307,6 +317,8 @@ def render_html(order_form: dict, stage_a: dict | None, headers: list[str], imag
       --flag-resolved-soft: #3a2e1a;
       --flag-corrected: #b79ce0;
       --flag-corrected-soft: #332a42;
+      --flag-template: #4fd4a8;
+      --flag-template-soft: #1c3830;
       --flag-unverified: #9aa3ad;
       --flag-unverified-soft: #2c3036;
     }}
@@ -475,6 +487,7 @@ def render_html(order_form: dict, stage_a: dict | None, headers: list[str], imag
   .recount-unresolved {{ color: var(--flag-unresolved); }}
   .recount-resolved {{ color: var(--flag-resolved); }}
   .recount-auto_corrected {{ color: var(--flag-corrected); }}
+  .recount-template_corrected {{ color: var(--flag-template); }}
   .recount-unverified {{ color: var(--flag-unverified); font-weight: 400; }}
 
   /* Quantity cells the recount pass thinks are worth a second look -- see
@@ -486,6 +499,7 @@ def render_html(order_form: dict, stage_a: dict | None, headers: list[str], imag
   td.flag-unresolved {{ background: var(--flag-unresolved-soft); box-shadow: inset 0 0 0 2px var(--flag-unresolved); }}
   td.flag-resolved {{ background: var(--flag-resolved-soft); box-shadow: inset 0 0 0 2px var(--flag-resolved); }}
   td.flag-auto_corrected {{ background: var(--flag-corrected-soft); box-shadow: inset 0 0 0 2px var(--flag-corrected); }}
+  td.flag-template_corrected {{ background: var(--flag-template-soft); box-shadow: inset 0 0 0 2px var(--flag-template); }}
   td.flag-unverified {{ background: var(--flag-unverified-soft); box-shadow: inset 0 0 0 1px var(--flag-unverified); }}
 
   .shift-controls {{
@@ -584,6 +598,7 @@ def render_html(order_form: dict, stage_a: dict | None, headers: list[str], imag
       <span style="color:var(--flag-unresolved);font-weight:600;">red</span> = a strong, specific problem (row doesn't sum to its own printed total, or two independent reads disagreed with no automatic resolution) — most important to check,
       <span style="color:var(--flag-resolved);font-weight:600;">amber</span> = a likely fix was found automatically (a probable column shift, or a disagreement resolved via Total Dozen/catalog) — worth a glance,
       <span style="color:var(--flag-corrected);font-weight:600;">purple</span> = both reads agreed but were auto-corrected against the product catalog (shared-bias check),
+      <span style="color:var(--flag-template);font-weight:600;">green</span> = auto-corrected from a human's confirmed correction on a previous order using this exact form template — quick check recommended,
       <span style="color:var(--flag-unverified);font-weight:600;">gray</span> = a weaker signal (sizes outside the matched product's catalog range, or a row recount couldn't independently verify) — worth a glance.
       Each row also has ◀/▶ buttons to shift every filled cell in that row one size column left/right (for a column-drift misread), and a "Fix" button when the catalog check already found a specific likely offset.
       Edit any cell directly, then use "Export corrected JSON" to download the corrected file.

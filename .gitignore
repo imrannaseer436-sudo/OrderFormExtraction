@@ -13,6 +13,22 @@ __pycache__/
 extracted*/
 usage_log*.csv
 
+# compare_hybrid_backends.py's own default --outdir -- same "generated per
+# run, not source" reasoning as extracted*/ above, just a different default
+# name since it's a separate script, not extract_ollama_cloud.py itself.
+compare_hybrid_out/
+
 # editor/OS
 .DS_Store
 Thumbs.db
+
+# review UI working data -- one folder per review session, holding the
+# uploaded photos, this pipeline's own output for them, and the
+# submitted_<orderno>.json audit record. Per-run, not source.
+ui_sessions/
+
+# per-template correction memory -- accumulated business data about this
+# company's own order-form templates (recurring item-name misreads, column
+# shifts) built up from real submitted orders. Per-installation, not source,
+# same reasoning as ui_sessions/ above.
+template_memory/
